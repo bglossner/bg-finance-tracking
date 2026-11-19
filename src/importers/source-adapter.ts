@@ -7,6 +7,6 @@ export interface NormalizedTransaction {
   readonly imported_id: string;
 }
 
-export interface SourceAdapter {
-  parse(contents: string): readonly NormalizedTransaction[];
+export interface SourceAdapter<Options, Row extends NormalizedTransaction = NormalizedTransaction> {
+  parse(path: string, options: Options): Promise<{ account: string; rows: Row[] }>;
 }

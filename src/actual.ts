@@ -4,25 +4,20 @@ import type { NormalizedTransaction } from './importers/source-adapter.js';
 type ActualApi = Pick<typeof Actual,
   'init' | 'downloadBudget' | 'getAccounts' | 'importTransactions' | 'sync' | 'shutdown'>;
 
-interface ImportConfig {
+interface ImportConnection {
   serverURL: string;
   password: string;
   dataDir: string;
   syncId: string;
   e2ePassword?: string;
-  accountId: string;
 }
 
-export function readImportConfig(env: NodeJS.ProcessEnv, alias: string): ImportConfig {
-  function required(key: string): string {
-    const value = env[key];
-    if (!value?.trim()) throw new Error(`Set ${key}.`);
-    return value;
-  }
+type ImportConfig = ImportConnection & ({ accountId: string } | { accountReference: string });
 
+export function readImportConfig(env: NodeJS.ProcessEnv, alias: string): ImportConnection & { accountId: string } {
   let accounts: unknown;
   try {
-    accounts = JSON.parse(required('ACTUAL_ACCOUNTS'));
+    accounts = JSON.parse(env.ACTUAL_ACCOUNTS ?? '');
   } catch {
     throw new Error('Set ACTUAL_ACCOUNTS to a JSON object mapping aliases to account IDs.');
   }
@@ -30,13 +25,26 @@ export function readImportConfig(env: NodeJS.ProcessEnv, alias: string): ImportC
     Object.hasOwn(accounts, alias) ? (accounts as Record<string, unknown>)[alias] : undefined;
   if (typeof accountId !== 'string' || !accountId.trim()) throw new Error('Unknown account alias.');
 
+  return { ...readConnection(env), accountId };
+}
+
+export function readStatementImportConfig(env: NodeJS.ProcessEnv, accountReference: string): ImportConfig {
+  return { ...readConnection(env), accountReference };
+}
+
+function readConnection(env: NodeJS.ProcessEnv): ImportConnection {
+  function required(key: string): string {
+    const value = env[key];
+    if (!value?.trim()) throw new Error(`Set ${key}.`);
+    return value;
+  }
+
   return {
     serverURL: required('ACTUAL_SERVER_URL'),
     password: required('ACTUAL_SERVER_PASSWORD'),
     dataDir: required('ACTUAL_CACHE_DIR'),
     syncId: required('ACTUAL_BUDGET_SYNC_ID'),
     e2ePassword: env.ACTUAL_E2E_PASSWORD || undefined,
-    accountId,
   };
 }
 
@@ -71,14 +79,16 @@ export function parseImportRows(contents: string): ImportRow[] {
 }
 
 export async function importIntoActual(api: ActualApi, config: ImportConfig, rows: ImportRow[]) {
-  const { serverURL, password, dataDir, syncId, e2ePassword, accountId } = config;
+  const { serverURL, password, dataDir, syncId, e2ePassword } = config;
   await api.init({ serverURL, password, dataDir, verbose: false });
   try {
     await api.downloadBudget(syncId, { password: e2ePassword });
     const accounts = await api.getAccounts();
-    if (!accounts.some(account => account.id === accountId && !account.closed)) {
-      throw new Error('The alias must resolve to an open account in the selected budget.');
-    }
+    const matches = accounts.filter(account => !account.closed && ('accountId' in config
+      ? account.id === config.accountId
+      : account.id === config.accountReference || account.name === config.accountReference));
+    if (matches.length !== 1) throw new Error('The alias must resolve to exactly one open account in the selected budget.');
+    const { id: accountId } = matches[0];
     const result = await api.importTransactions(accountId, rows.map(row => ({
       account: accountId,
       amount: row.amountMinor,

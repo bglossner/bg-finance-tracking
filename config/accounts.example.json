@@ -1,6 +1,4 @@
 {
-  "accounts": [
-    { "alias": "example-checking", "actualAccountAlias": "sample-cash" },
-    { "alias": "example-card", "actualAccountAlias": "sample-card" }
-  ]
+  "example-checking": { "actualAccount": "Synthetic Checking", "last4": "1234", "filename": "checking-*.csv" },
+  "example-card": { "actualAccount": "Synthetic Card", "last4": "5678", "filename": "card-*.csv" }
 }

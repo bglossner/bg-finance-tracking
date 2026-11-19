@@ -4,5 +4,6 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
+COPY test ./test
 RUN npm run build
 ENTRYPOINT ["node", "dist/src/cli.js"]

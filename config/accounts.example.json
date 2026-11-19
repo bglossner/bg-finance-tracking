@@ -1,0 +1,6 @@
+{
+  "accounts": [
+    { "alias": "example-checking", "actualAccountAlias": "sample-cash" },
+    { "alias": "example-card", "actualAccountAlias": "sample-card" }
+  ]
+}

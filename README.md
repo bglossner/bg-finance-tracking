@@ -2,7 +2,8 @@
 
 A TypeScript scaffold for importing downloaded account statements into Actual Budget.
 
-Use Node.js 26.13.1 from `.nvmrc` and its bundled npm. On Linux, install Python 3.10+, `make`, and a C++20 toolchain for the API dependency’s native SQLite binding.
+Use Node.js 26.12.1 from `.nvmrc` and its bundled npm. On Linux, install Python 3.10+, `make`, and a C++20 toolchain for the API dependency’s native SQLite binding.
+On Amazon Linux 2 cloud desktops, run commands through mise, for example `mise exec node@26.12.1 -- npm ci`.
 
 ```sh
 npm ci

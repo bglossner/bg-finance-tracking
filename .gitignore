@@ -29,3 +29,4 @@ actual-data/
 *.[cC][aA][mM][tT]
 !/test/fixtures/**/*.[qQ][iI][fF]
 !/test/fixtures/**/*.[cC][aA][mM][tT]
+!/ops/docker/.env.example

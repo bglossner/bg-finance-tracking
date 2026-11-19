@@ -1,0 +1,37 @@
+name: bgfin
+services:
+  actual-server:
+    image: actualbudget/actual-server:26.11.0
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5006/health').then(r => { if (!r.ok) process.exitCode = 1 }).catch(() => { process.exitCode = 1 })"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    ports:
+      - "127.0.0.1:5006:5006"
+    volumes:
+      - type: bind
+        source: ${BGFIN_ACTUAL_DATA_DIR:?Set an absolute data directory outside the repository}
+        target: /data
+        bind:
+          create_host_path: false
+  job:
+    profiles: [import]
+    build:
+      context: ../..
+      dockerfile: ops/docker/Dockerfile.job
+    depends_on:
+      actual-server:
+        condition: service_healthy
+    environment:
+      ACTUAL_SERVER_URL: http://actual-server:5006
+      ACTUAL_SERVER_PASSWORD:
+      ACTUAL_BUDGET_SYNC_ID:
+      ACTUAL_E2E_PASSWORD:
+      ACTUAL_ACCOUNTS:
+      ACTUAL_CACHE_DIR: /actual-cache
+    entrypoint: ["flock", "--nonblock", "--no-fork", "/actual-cache/import.lock", "node", "dist/src/cli.js"]
+    volumes:
+      - actual-cache:/actual-cache
+volumes:
+  actual-cache:

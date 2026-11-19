@@ -1,0 +1,32 @@
+[
+  {
+    "amountMinor": -101,
+    "postedDate": "2026-01-01",
+    "imported_id": "fake-1",
+    "payee": "Imaginary Merchant 1"
+  },
+  {
+    "amountMinor": -202,
+    "postedDate": "2026-01-02",
+    "imported_id": "fake-2",
+    "payee": "Imaginary Merchant 2"
+  },
+  {
+    "amountMinor": -303,
+    "postedDate": "2026-01-03",
+    "imported_id": "fake-3",
+    "payee": "Imaginary Merchant 3"
+  },
+  {
+    "amountMinor": -404,
+    "postedDate": "2026-01-04",
+    "imported_id": "fake-4",
+    "payee": "Imaginary Merchant 4"
+  },
+  {
+    "amountMinor": -505,
+    "postedDate": "2026-01-05",
+    "imported_id": "fake-5",
+    "payee": "Imaginary Merchant 5"
+  }
+]

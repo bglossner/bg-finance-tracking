@@ -220,3 +220,26 @@ test('retains routed files when the parser is unavailable and continues a health
   assert.deepEqual(await env.pending(), ['first.qfx', 'later.qfx']);
   assert.deepEqual(await env.reasons(), []);
 });
+
+test('a changed claimed file stays pending and stops that account', async t => {
+  const env = await setup(t);
+  const initial = await fixture('checking-synthetic.qfx');
+  await env.drop('first.qfx', initial);
+  await env.drop('later.qfx', initial.toString().replaceAll('20260101', '20260106'));
+  await env.drop('card.qfx', await fixture('card-synthetic.qfx'));
+  const parse = env.options.parseRows!;
+  env.options.parseRows = async (bytes, extension) => {
+    if (bytes.equals(initial)) {
+      const processing = join(env.inbox, '.processing');
+      for (const directory of await readdir(processing)) {
+        if ((await readdir(join(processing, directory))).includes('first.qfx')) {
+          await writeFile(join(processing, directory, 'first.qfx'), 'changed synthetic contents');
+        }
+      }
+    }
+    return parse(bytes, extension);
+  };
+  assert.equal(await runInbox(env.options), false);
+  assert.deepEqual(env.calls, ['Synthetic Card']);
+  assert.deepEqual(await env.pending(), ['first.qfx', 'later.qfx']);
+});

@@ -87,7 +87,8 @@ identifiers differ.
 Set `BGFIN_DATA_DIR` to a dedicated absolute path outside every checkout. The
 parent must already exist and the root and its subdirectories must be owned by
 the importer with mode `700`. Start from `config/accounts.example.json` and
-use a different Actual account for each alias. Keep alias names free of account
+use a different Actual account for each alias. Prefer Actual account IDs so a
+renamed or recreated account cannot match a stale name. Keep alias names free of account
 numbers and other private details because aliases appear in the summary.
 
 1. Run the importer once to create the directories and print the first `next export from` date.
@@ -115,7 +116,8 @@ On Linux with a compatible native SQLite binding and `flock` installed, run
 `npm run build` then `npm run import` with the same variables. Reuse one intake
 data root for a budget so concurrent invocations share the lock and account
 history. If a saved alias changes to a different account or budget, use a new
-data root. The importer keeps the Actual cache in private `state/actual-cache/`.
+data root. A saved reference by name cannot detect an account that is deleted
+and recreated under the same name. The importer keeps the Actual cache in private `state/actual-cache/`.
 
 | Variable | Purpose |
 | --- | --- |

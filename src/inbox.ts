@@ -187,13 +187,20 @@ function dates(rows: ImportRow[]) {
   return { earliest, latest };
 }
 
-async function prepare(candidate: Candidate, options: Options, blocked: Set<string>): Promise<Job | string | undefined> {
+async function prepare(candidate: Candidate, options: Options, blocked: Set<string>): Promise<Job | string> {
   if (candidate.info.isSymbolicLink()) return 'Symbolic links are not accepted.';
   if (!candidate.info.isFile() || candidate.info.nlink !== 1) return 'Expected a standalone regular file.';
   const extension = extname(candidate.path).toLowerCase();
   if (!['.qfx', '.ofx', '.csv'].includes(extension)) return 'Unsupported file extension.';
-  const contents = await snapshot(candidate);
-  if (!contents) return undefined;
+  let contents: Buffer;
+  try {
+    const copy = await snapshot(candidate);
+    if (!copy) throw new Error('Claimed file changed.');
+    contents = copy;
+  } catch (error) {
+    if (candidate.alias !== undefined) blocked.add(candidate.alias);
+    throw error;
+  }
   let alias: string;
   try {
     alias = matchStatement(options.routes, candidate.path, contents, candidate.alias);
@@ -253,9 +260,9 @@ export async function runInbox(options: Options): Promise<boolean> {
       try {
         const job = await prepare(candidate, options, blocked);
         if (typeof job === 'string') await quarantine(rejected, candidate, job);
-        else if (job) jobs.push(job);
+        else jobs.push(job);
       } catch {
-        options.warn('Inbox file could not be processed. Check the data directories.');
+        options.warn('A file could not be prepared and remains pending. Check file permissions and statement parser availability.');
         success = false;
       }
     }
@@ -268,7 +275,7 @@ export async function runInbox(options: Options): Promise<boolean> {
       let skipped = 0;
       for (const job of jobs.filter(job => job.alias === alias && !blocked.has(alias) && stateAvailable)) {
         try {
-          if (!await unchanged(job)) continue;
+          if (!await unchanged(job)) throw new Error('Claimed file changed.');
           const previous = accounts.get(alias);
           const duplicate = previous?.importedHashes.includes(job.hash) ?? false;
           const year = (job.latest ?? now.toISOString()).slice(0, 4);

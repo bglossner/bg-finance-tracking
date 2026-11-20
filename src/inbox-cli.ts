@@ -26,6 +26,16 @@ async function main() {
   const env: NodeJS.ProcessEnv = { ...process.env, ACTUAL_CACHE_DIR: cache };
   const configs = new Map([...routes.values()].map(route => [route.actualAccount,
     readStatementImportConfig(env, route.actualAccount)]));
+  const [connection] = configs.values();
+  if (!connection) throw new Error('Configure at least one account alias.');
+  let server: URL;
+  try {
+    server = new URL(connection.serverURL);
+  } catch {
+    throw new Error('Set ACTUAL_SERVER_URL to a valid HTTP or HTTPS URL.');
+  }
+  if (!['http:', 'https:'].includes(server.protocol)) throw new Error('Set ACTUAL_SERVER_URL to a valid HTTP or HTTPS URL.');
+  const budgetIdentity = JSON.stringify([server.href.replace(/\/+$/, ''), connection.syncId]);
   const repository = await realpath(fileURLToPath(new URL('../../', import.meta.url)));
   const report = console.log.bind(console);
   const warn = console.error.bind(console);
@@ -35,7 +45,7 @@ async function main() {
   Object.assign(console, { log: quiet, info: quiet, warn: quiet, error: quiet, debug: quiet });
   try {
     const complete = await runInbox({
-      dataRoot, repository, cutoff, routes, report, warn, budgetIdentity: env.ACTUAL_BUDGET_SYNC_ID!,
+      dataRoot, repository, cutoff, routes, report, warn, budgetIdentity,
       minimumAgeSeconds: integerSetting('BGFIN_MIN_FILE_AGE_SECONDS', 10),
       staleDays: integerSetting('BGFIN_STALE_DAYS', 10),
       async importRows(account, rows) {

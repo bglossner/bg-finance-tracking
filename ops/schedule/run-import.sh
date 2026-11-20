@@ -22,13 +22,16 @@ external_path() {
     local disjoint=${2:-false}
     [[ $path == /* && $path != / && $path != *:* && $path != *,* && $path != *$'\n'* ]] || return 1
     [[ $(realpath -e -- "$path") == "$path" ]] || return 1
-    while IFS= read -rd '' root; do
-        [[ $root == worktree\ * ]] || continue
-        root=${root#worktree }
-        [[ $path != "$root" && $path != "$root/"* ]] || return 1
-        if [[ $disjoint == true && $root == "$path/"* ]]; then return 1; fi
-    done < <(git -C "$repo" worktree list --porcelain -z)
-    return 0
+    [[ $path != "$repo" && $path != "$repo/"* ]] || return 1
+    git -C "$repo" worktree list --porcelain -z 2>/dev/null | (
+        while IFS= read -rd '' root; do
+            [[ $root == worktree\ * ]] || continue
+            root=${root#worktree }
+            [[ $path != "$root" && $path != "$root/"* ]] || exit 1
+            if [[ $disjoint == true && $root == "$path/"* ]]; then exit 1; fi
+        done
+        exit 0
+    )
 }
 
 [[ -n ${BGFIN_DATA_DIR-} ]] || fail 'Set BGFIN_DATA_DIR.'
@@ -39,13 +42,14 @@ mkdir -p -- "$logs"
 [[ ! -L $logs && $(stat -c '%u:%a' -- "$logs") == "$EUID:700" ]] || fail 'Use an owner-only logs directory (0700).'
 write_log() (
     # Serialize rotation and appends, including runs that skipped the import lock.
-    exec 8< "$logs"
-    flock -w 5 8
-    local log=$logs/import.log
+    exec 8< "$logs" || fail 'Could not open logs directory.'
+    flock -w 5 8 || fail 'Could not acquire log rotation lock.'
+    local log=$logs/import.log size
     if [[ -e $log || -L $log ]]; then
         [[ -f $log && ! -L $log && $(stat -c '%u:%a:%h' -- "$log") == "$EUID:600:1" ]] || fail 'Invalid import log.'
-        if (( $(stat -c %s -- "$log") >= 65536 )); then
-            mv -fT -- "$log" "$log.1"
+        size=$(stat -c %s -- "$log") || fail 'Could not read import log size.'
+        if (( size >= 65536 )); then
+            mv -fT -- "$log" "$log.1" || fail 'Could not rotate import log.'
         fi
     fi
     printf '%s files=%s duplicates=%s added=%s updated=%s skipped=%s stale=%s busy=%s failures=%s\n' \
@@ -95,7 +99,6 @@ while IFS= read -r line || [[ -n $line ]]; do
     docker_settings[$key]=${line#*=}
 done <&7
 exec 7<&-
-
 
 lock=$BGFIN_DATA_DIR/scheduled-import.lock
 # Noclobber keeps concurrent creation safe and rejects a dangling symlink.

@@ -8,7 +8,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test dist/test/*.test.js",
-    "test:container": "BGFIN_CONTAINER_TESTS=1 node --test dist/test/*.test.js"
+    "test:container": "BGFIN_CONTAINER_TESTS=1 node --test dist/test/*.test.js",
+    "import": "node dist/src/inbox-cli.js"
   },
   "dependencies": { "@actual-app/api": "26.11.0" },
   "devDependencies": { "@types/node": "26.0.0", "typescript": "6.0.3" }

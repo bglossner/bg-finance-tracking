@@ -81,3 +81,57 @@ export contains only some of a day's indistinguishable rows, the importer cannot
 tell which occurrences were exported. Keep full days in overlapping CSV export
 windows. Keep CSV and QFX/OFX date ranges disjoint for each account because their
 identifiers differ.
+
+## Drop-folder imports
+
+Set `BGFIN_DATA_DIR` to a dedicated absolute path outside every checkout. The
+parent must already exist and the root and its subdirectories must be owned by
+the importer with mode `700`. Start from `config/accounts.example.json` and
+use a different Actual account for each alias. Keep alias names free of account
+numbers and other private details because aliases appear in the summary.
+
+1. Run the importer once to create the directories and print the first `next export from` date.
+2. In Chase's Activity list, download QFX for each account from its printed date, inclusive. Drop or `scp` the finished file into `inbox/`. For an explicit route, create `inbox/<alias>/` with mode `700` and drop it there. When copying a file into the inbox, use a `.part` name and rename it after the copy completes.
+3. Run the importer again. Read each account's summary for counts and the next export date. Check `quarantine/` and its `.reason.txt` files for rejected inputs. Files that fail to sync stay in the inbox for retry.
+
+On Amazon Linux 2, build the job image as in the Chase statements section and
+run the command inside it. For the existing local Actual stack, use an ignored
+private env file with the Actual connection variables (`ACTUAL_SERVER_URL`
+should be `http://actual-server:5006` on the stack's Docker network):
+
+```sh
+export BGFIN_DATA_DIR=/absolute/path/to/private-import-data
+export BGFIN_HISTORY_CUTOFF=2025-01-01
+mkdir -m 700 "$BGFIN_DATA_DIR"
+docker run --rm --network bgfin_default --entrypoint npm \
+  --user "$(id -u):$(id -g)" --env-file /absolute/path/to/private-actual.env \
+  --env BGFIN_DATA_DIR=/intake --env BGFIN_HISTORY_CUTOFF \
+  --env BGFIN_ACCOUNTS_FILE=/config/accounts.json --env ACTUAL_CACHE_DIR=/tmp \
+  --volume "$BGFIN_DATA_DIR:/intake" \
+  --volume "$PWD/config/accounts.json:/config/accounts.json:ro" bgfin-job run import
+```
+
+On Linux with a compatible native SQLite binding and `flock` installed, run
+`npm run build` then `npm run import` with the same variables. Use a dedicated
+`ACTUAL_CACHE_DIR` for this importer. Reuse one intake data root for a budget so
+concurrent invocations share the same lock and account history.
+
+| Variable | Purpose |
+| --- | --- |
+| `BGFIN_DATA_DIR` | Required private data root |
+| `BGFIN_HISTORY_CUTOFF` | Required first export date, `YYYY-MM-DD` |
+| `BGFIN_ACCOUNTS_FILE` | Account mapping, defaults to `config/accounts.json` |
+| `BGFIN_MIN_FILE_AGE_SECONDS` | Minimum age after the file's last modification, defaults to `10` |
+| `BGFIN_STALE_DAYS` | Warn if the latest imported posted date is older than this many UTC calendar days, defaults to `10` |
+| `ACTUAL_SERVER_URL`, `ACTUAL_SERVER_PASSWORD`, `ACTUAL_BUDGET_SYNC_ID` | Actual connection and budget |
+| `ACTUAL_CACHE_DIR`, `ACTUAL_E2E_PASSWORD` | Actual API cache directory and optional encrypted budget password |
+
+`inbox/` holds complete input files and optional alias subdirectories. QFX,
+OFX and CSV extensions are case-insensitive. `archive/<alias>/YYYY/` uses the
+latest posted year in each file and marks exact duplicates in the archived
+name. For an empty statement, it uses the current UTC year. `quarantine/`
+holds rejected inputs and their reasons. `state/accounts.json` holds each
+account's latest successful posted date, successful import time and file hashes.
+If the state file is corrupt, the importer keeps a copy in `state/` and uses the
+configured cutoff until successful imports rebuild the checkpoints. Actual uses
+transaction IDs to deduplicate overlapping exports and retries.

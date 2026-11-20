@@ -14,6 +14,8 @@ interface HandlerOfxRow {
 
 type Result = { format: 'csv'; rows: string[][] } | { format: 'ofx'; rows: { amount: number; postedDate: string; fitid?: string; payee?: string }[] };
 
+export class InvalidStatement extends Error {}
+
 function mismatch(): Error {
   return new Error(`Unsupported statement parser response from ${apiPackage} ${version}. Check parser compatibility.`);
 }
@@ -28,7 +30,7 @@ export function validateParserResult(format: Result['format'], value: unknown): 
       (!Array.isArray(value.transactions) && !(format === 'ofx' && value.errors.length && value.transactions === undefined))) {
     throw mismatch();
   }
-  if (value.errors.length) throw new Error(`${apiPackage} ${version} could not parse the statement.`);
+  if (value.errors.length) throw new InvalidStatement(`${apiPackage} ${version} could not parse the statement.`);
   const rows = value.transactions as unknown[];
   if (format === 'csv') {
     if (!rows.every(row => Array.isArray(row) && row.every(cell => typeof cell === 'string'))) throw mismatch();

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { basename, extname, join, matchesGlob } from 'node:path';
 import { parseImportRows, type ImportRow } from '../actual.js';
 import type { SourceAdapter } from './source-adapter.js';
-import { parseActualFile } from './actual-file-parser.js';
+import { InvalidStatement, parseActualFile } from './actual-file-parser.js';
 
 interface AccountRoute {
   actualAccount: string;
@@ -33,7 +33,7 @@ export function parseAccounts(contents: string): Routes {
   }
 }
 
-export function routeAccount(routes: Routes, path: string, last4?: string, alias?: string): string {
+export function matchAccount(routes: Routes, path: string, last4?: string, alias?: string): string {
   const filename = basename(path);
   const matches = [...routes].filter(([, route]) =>
     matchesGlob(filename, route.filename) || (last4 !== undefined && route.last4 === last4));
@@ -41,12 +41,16 @@ export function routeAccount(routes: Routes, path: string, last4?: string, alias
     const route = routes.get(alias);
     if (!route) throw new Error('Unknown account alias.');
     if (last4 !== undefined && route.last4 !== last4) throw new Error('Statement account conflicts with the selected alias.');
-    return route.actualAccount;
+    return alias;
   }
   if (matches.length !== 1) throw new Error(matches.length ? 'Ambiguous statement account.' : 'Unmatched statement account.');
-  const [, route] = matches[0];
+  const [matchedAlias, route] = matches[0];
   if (last4 !== undefined && route.last4 !== last4) throw new Error('Statement account conflicts with the filename match.');
-  return route.actualAccount;
+  return matchedAlias;
+}
+
+export function routeAccount(routes: Routes, path: string, last4?: string, alias?: string): string {
+  return routes.get(matchAccount(routes, path, last4, alias))!.actualAccount;
 }
 
 // Actual's parser discards account metadata. Read just the routing field and reject multi-account files.
@@ -146,31 +150,44 @@ export function normalizeOfx(rows: readonly {
   });
 }
 
+export function matchStatement(routes: Routes, path: string, contents: Buffer, alias?: string): string {
+  const isOfx = extname(path).toLowerCase() !== '.csv';
+  const last4 = isOfx ? ofxAccountSuffix(contents) : undefined;
+  if (isOfx && last4 === undefined && alias === undefined) {
+    throw new Error('Statement has no account identifier. Supply --account explicitly.');
+  }
+  return matchAccount(routes, path, last4, alias);
+}
+
+export async function parseStatement(contents: Buffer, extension: string): Promise<ImportRow[]> {
+  const format = extension === '.csv' ? 'csv' : 'ofx';
+  const directory = await mkdtemp(join(tmpdir(), 'bgfin-statement-'));
+  try {
+    const snapshot = join(directory, `statement${extension}`);
+    // Actual's SGML conversion cannot close an empty ACCTID leaf.
+    const input = format === 'ofx' && ofxAccountSuffix(contents) === undefined
+      ? Buffer.from(contents.toString('latin1').replace(/<ACCTID\s*>\s*(?:<\/ACCTID\s*>)?(?=\s*<)/g, ''), 'latin1')
+      : contents;
+    await writeFile(snapshot, input, { mode: 0o600 });
+    const parsed = await parseActualFile(snapshot, format);
+    try {
+      const rows = parsed.format === 'csv' ? normalizeCsv(parsed.rows) : normalizeOfx(parsed.rows);
+      if (parsed.format === 'ofx') verifyOfxValues(contents, rows);
+      return parseImportRows(JSON.stringify(rows));
+    } catch (error) {
+      throw new InvalidStatement(error instanceof Error ? error.message : 'Invalid Chase statement.');
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 export const chase: SourceAdapter<{ routes: Routes; alias?: string }, ImportRow> = {
   async parse(path, { routes, alias }) {
     const extension = extname(path).toLowerCase();
     if (!['.csv', '.qfx', '.ofx'].includes(extension)) throw new Error('Expected a Chase CSV, QFX or OFX file.');
-    const format = extension === '.csv' ? 'csv' : 'ofx';
     const contents = await readFile(path).catch(() => { throw new Error('Cannot read statement file.'); });
-    const last4 = format === 'ofx' ? ofxAccountSuffix(contents) : undefined;
-    if (format === 'ofx' && last4 === undefined && alias === undefined) {
-      throw new Error('Statement has no account identifier. Supply --account explicitly.');
-    }
-    const account = routeAccount(routes, path, last4, alias);
-    const directory = await mkdtemp(join(tmpdir(), 'bgfin-statement-'));
-    try {
-      const snapshot = join(directory, `statement${extension}`);
-      // Actual's SGML conversion cannot close an empty ACCTID leaf.
-      const input = format === 'ofx' && last4 === undefined
-        ? Buffer.from(contents.toString('latin1').replace(/<ACCTID\s*>\s*(?:<\/ACCTID\s*>)?(?=\s*<)/g, ''), 'latin1')
-        : contents;
-      await writeFile(snapshot, input, { mode: 0o600 });
-      const parsed = await parseActualFile(snapshot, format);
-      const rows = parsed.format === 'csv' ? normalizeCsv(parsed.rows) : normalizeOfx(parsed.rows);
-      if (parsed.format === 'ofx') verifyOfxValues(contents, rows);
-      return { account, rows: parseImportRows(JSON.stringify(rows)) };
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
+    const matched = matchStatement(routes, path, contents, alias);
+    return { account: routes.get(matched)!.actualAccount, rows: await parseStatement(contents, extension) };
   },
 };

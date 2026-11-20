@@ -23,7 +23,7 @@ async function setup(t: TestContext) {
   const warnings: string[] = [];
   const calls: string[] = [];
   const options: Parameters<typeof runInbox>[0] = {
-    dataRoot, repository: process.cwd(), routes, cutoff: '2025-06-01', minimumAgeSeconds: 10, staleDays: 10, now,
+    dataRoot, repository: process.cwd(), routes, cutoff: '2025-06-01', budgetIdentity: 'synthetic-budget', minimumAgeSeconds: 10, staleDays: 10, now,
     report: message => reports.push(message), warn: message => warnings.push(message),
     async importRows(account) { calls.push(account); return { added: 1, updated: 0 }; },
     async parseRows(contents) {
@@ -42,7 +42,11 @@ async function setup(t: TestContext) {
     return Promise.all((await readdir(quarantine)).filter(name => name.endsWith('.reason.txt'))
       .map(name => readFile(join(quarantine, name), 'utf8')));
   }
-  return { dataRoot, inbox, reports, warnings, calls, options, drop, state, reasons };
+  async function pending() {
+    const directory = join(inbox, '.processing');
+    return (await Promise.all((await readdir(directory)).map(name => readdir(join(directory, name))))).flat().sort();
+  }
+  return { dataRoot, inbox, reports, warnings, calls, options, drop, state, reasons, pending };
 }
 
 test('routes a subdirectory, routes by ACCTID, and quarantines conflicting or unknown routes', async t => {
@@ -72,7 +76,7 @@ test('ignores temporary and recent files and quarantines junk and links without 
   assert.equal(await runInbox(env.options), true);
   assert.deepEqual((await env.reasons()).sort(), ['Symbolic links are not accepted.\n', 'Unsupported file extension.\n']);
   assert.equal(await readFile(target, 'utf8'), 'outside');
-  assert.deepEqual(await readdir(env.inbox), ['checking-recent.qfx', 'checking.qfx.TMP', 'checking.qfx.crdownload', 'checking.qfx.download', 'checking.qfx.part']);
+  assert.deepEqual(await readdir(env.inbox), ['.processing', 'checking-recent.qfx', 'checking.qfx.TMP', 'checking.qfx.crdownload', 'checking.qfx.download', 'checking.qfx.part']);
   assert.deepEqual(env.calls, []);
 });
 
@@ -99,13 +103,20 @@ test('continues other accounts after an ambiguous failure and advances only succ
   const env = await setup(t);
   await env.drop('one.qfx', await fixture('checking-synthetic.qfx'));
   await env.drop('two.qfx', await fixture('card-synthetic.qfx'));
+  const later = (await fixture('checking-synthetic.qfx')).toString().replaceAll('20260101', '20260106');
+  await env.drop('later.qfx', later);
+  const attempted: string[] = [];
   const accept = env.options.importRows;
   env.options.importRows = async (account, rows) => {
-    if (account === 'Synthetic Checking') throw new Error('ambiguous sync with sensitive payload');
+    if (account === 'Synthetic Checking') {
+      attempted.push(rows[0].postedDate);
+      throw new Error('ambiguous sync with sensitive payload');
+    }
     return accept(account, rows);
   };
   assert.equal(await runInbox(env.options), false);
-  assert.deepEqual(await readdir(env.inbox), ['one.qfx']);
+  assert.deepEqual(attempted, ['2026-01-01']);
+  assert.deepEqual(await env.pending(), ['later.qfx', 'one.qfx']);
   let accounts = await loadAccounts(env.state, env.options.warn);
   assert.equal(accounts.has('checking'), false);
   assert.ok(accounts.get('card')?.latestPostedDate);
@@ -113,7 +124,7 @@ test('continues other accounts after an ambiguous failure and advances only succ
   assert.ok(env.warnings.every(message => !message.includes('sensitive')));
   assert.equal(await runInbox({ ...env.options, importRows: accept }), true);
   accounts = await loadAccounts(env.state, env.options.warn);
-  assert.equal(accounts.get('checking')?.latestPostedDate, '2026-01-01');
+  assert.equal(accounts.get('checking')?.latestPostedDate, '2026-01-06');
   assert.equal(accounts.get('checking')?.lastRun, now.toISOString());
 });
 
@@ -129,7 +140,7 @@ test('atomically replaces private state and recovers missing and corrupt files',
   assert.equal(await readFile(join(env.state, corrupt), 'utf8'), '{');
   await saveAccounts(env.state, new Map());
   const before = await stat(path);
-  const next = new Map([['checking', { lastRun: now.toISOString(), importedHashes: ['a'.repeat(64)] }]]);
+  const next = new Map([['checking', { identity: 'b'.repeat(64), lastRun: now.toISOString(), importedHashes: ['a'.repeat(64)] }]]);
   await saveAccounts(env.state, next);
   const after = await stat(path);
   assert.notEqual(after.ino, before.ino);
@@ -161,5 +172,51 @@ test('parses checking and card QFX dropped together in the container', { skip: !
   assert.deepEqual(env.calls, ['Synthetic Checking', 'Synthetic Card']);
   assert.match(env.reports[0], /1 added.*next export from: 2025-12-29/);
   assert.match(env.reports[1], /2 added.*next export from:/);
-  assert.deepEqual(await readdir(env.inbox), []);
+  assert.deepEqual(await env.pending(), []);
+});
+
+test('an atomic second drop with the same basename stays separate from the claimed job', async t => {
+  const env = await setup(t);
+  const initial = await fixture('checking-synthetic.qfx');
+  await env.drop('same.qfx', initial);
+  const later = initial.toString().replaceAll('20260101', '20260106');
+  const accept = env.options.importRows;
+  env.options.importRows = async (account, rows) => {
+    await env.drop('same.qfx', later);
+    return accept(account, rows);
+  };
+  assert.equal(await runInbox(env.options), true);
+  assert.equal(await readFile(join(env.inbox, 'same.qfx'), 'utf8'), later);
+  const archive = join(env.dataRoot, 'archive/checking/2026');
+  const [saved] = await readdir(archive);
+  assert.deepEqual(await readFile(join(archive, saved)), initial);
+  assert.equal(await runInbox({ ...env.options, importRows: accept }), true);
+  assert.equal((await loadAccounts(env.state, env.options.warn)).get('checking')?.latestPostedDate, '2026-01-06');
+});
+
+test('does not reuse hashes or dates against a different budget', async t => {
+  const env = await setup(t);
+  await env.drop('original.qfx', await fixture('checking-synthetic.qfx'));
+  assert.equal(await runInbox(env.options), true);
+  await env.drop('repeat.qfx', await fixture('checking-synthetic.qfx'));
+  await assert.rejects(runInbox({ ...env.options, budgetIdentity: 'different-budget' }), /destination changed/);
+  assert.deepEqual(await readdir(env.inbox), ['.processing', 'repeat.qfx']);
+  assert.equal(env.calls.length, 1);
+});
+
+test('retains routed files when the parser is unavailable and continues a healthy account', async t => {
+  const env = await setup(t);
+  const first = await fixture('checking-synthetic.qfx');
+  await env.drop('first.qfx', first);
+  await env.drop('later.qfx', first.toString().replaceAll('20260101', '20260106'));
+  await env.drop('card.qfx', await fixture('card-synthetic.qfx'));
+  const parse = env.options.parseRows!;
+  env.options.parseRows = async (contents, extension) => {
+    if (contents.equals(first)) throw new Error('synthetic parser outage');
+    return parse(contents, extension);
+  };
+  assert.equal(await runInbox(env.options), false);
+  assert.deepEqual(env.calls, ['Synthetic Card']);
+  assert.deepEqual(await env.pending(), ['first.qfx', 'later.qfx']);
+  assert.deepEqual(await env.reasons(), []);
 });

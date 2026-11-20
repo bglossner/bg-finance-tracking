@@ -106,15 +106,16 @@ mkdir -m 700 "$BGFIN_DATA_DIR"
 docker run --rm --network bgfin_default --entrypoint npm \
   --user "$(id -u):$(id -g)" --env-file /absolute/path/to/private-actual.env \
   --env BGFIN_DATA_DIR=/intake --env BGFIN_HISTORY_CUTOFF \
-  --env BGFIN_ACCOUNTS_FILE=/config/accounts.json --env ACTUAL_CACHE_DIR=/tmp \
+  --env BGFIN_ACCOUNTS_FILE=/config/accounts.json \
   --volume "$BGFIN_DATA_DIR:/intake" \
   --volume "$PWD/config/accounts.json:/config/accounts.json:ro" bgfin-job run import
 ```
 
 On Linux with a compatible native SQLite binding and `flock` installed, run
-`npm run build` then `npm run import` with the same variables. Use a dedicated
-`ACTUAL_CACHE_DIR` for this importer. Reuse one intake data root for a budget so
-concurrent invocations share the same lock and account history.
+`npm run build` then `npm run import` with the same variables. Reuse one intake
+data root for a budget so concurrent invocations share the lock and account
+history. If a saved alias changes to a different account or budget, use a new
+data root. The importer keeps the Actual cache in private `state/actual-cache/`.
 
 | Variable | Purpose |
 | --- | --- |
@@ -124,10 +125,12 @@ concurrent invocations share the same lock and account history.
 | `BGFIN_MIN_FILE_AGE_SECONDS` | Minimum age after the file's last modification, defaults to `10` |
 | `BGFIN_STALE_DAYS` | Warn if the latest imported posted date is older than this many UTC calendar days, defaults to `10` |
 | `ACTUAL_SERVER_URL`, `ACTUAL_SERVER_PASSWORD`, `ACTUAL_BUDGET_SYNC_ID` | Actual connection and budget |
-| `ACTUAL_CACHE_DIR`, `ACTUAL_E2E_PASSWORD` | Actual API cache directory and optional encrypted budget password |
+| `ACTUAL_E2E_PASSWORD` | Optional encrypted budget password |
 
 `inbox/` holds complete input files and optional alias subdirectories. QFX,
-OFX and CSV extensions are case-insensitive. `archive/<alias>/YYYY/` uses the
+OFX and CSV extensions are case-insensitive. Claimed jobs live in
+`inbox/.processing/` until they are archived or quarantined. A sync error
+keeps that job and later jobs for its account pending. Other accounts continue. `archive/<alias>/YYYY/` uses the
 latest posted year in each file and marks exact duplicates in the archived
 name. For an empty statement, it uses the current UTC year. `quarantine/`
 holds rejected inputs and their reasons. `state/accounts.json` holds each

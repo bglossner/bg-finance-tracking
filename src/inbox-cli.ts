@@ -1,9 +1,10 @@
 import { readFile, realpath } from 'node:fs/promises';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { importIntoActual, readStatementImportConfig } from './actual.js';
 import { runInbox } from './inbox.js';
 import { parseAccounts } from './importers/chase.js';
-import { validDate } from './state/intake-state.js';
+import { privateDirectory, validDate } from './state/intake-state.js';
 
 function integerSetting(key: string, fallback: number): number {
   const value = process.env[key];
@@ -21,8 +22,10 @@ async function main() {
     throw new Error('Cannot read accounts configuration. Set BGFIN_ACCOUNTS_FILE or create config/accounts.json.');
   });
   const routes = parseAccounts(contents);
+  const cache = join(dataRoot, 'state', 'actual-cache');
+  const env: NodeJS.ProcessEnv = { ...process.env, ACTUAL_CACHE_DIR: cache };
   const configs = new Map([...routes.values()].map(route => [route.actualAccount,
-    readStatementImportConfig(process.env, route.actualAccount)]));
+    readStatementImportConfig(env, route.actualAccount)]));
   const repository = await realpath(fileURLToPath(new URL('../../', import.meta.url)));
   const report = console.log.bind(console);
   const warn = console.error.bind(console);
@@ -32,10 +35,11 @@ async function main() {
   Object.assign(console, { log: quiet, info: quiet, warn: quiet, error: quiet, debug: quiet });
   try {
     const complete = await runInbox({
-      dataRoot, repository, cutoff, routes, report, warn,
+      dataRoot, repository, cutoff, routes, report, warn, budgetIdentity: env.ACTUAL_BUDGET_SYNC_ID!,
       minimumAgeSeconds: integerSetting('BGFIN_MIN_FILE_AGE_SECONDS', 10),
       staleDays: integerSetting('BGFIN_STALE_DAYS', 10),
       async importRows(account, rows) {
+        await privateDirectory(cache);
         return importIntoActual(await import('@actual-app/api'), configs.get(account)!, rows);
       },
     });
@@ -45,6 +49,7 @@ async function main() {
   }
 }
 
+process.umask(0o077);
 try {
   await main();
 } catch (error) {

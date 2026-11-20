@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { nextExportWindow } from './export-window.js';
 
 export interface AccountState {
+  identity: string;
   latestPostedDate?: string;
   lastRun: string;
   importedHashes: string[];
@@ -103,8 +104,8 @@ export async function withIntakeLock<T>(state: string, run: () => Promise<T>): P
 
 function accountState(value: unknown): value is AccountState {
   if (!value || typeof value !== 'object') return false;
-  const { latestPostedDate, lastRun, importedHashes } = value as Partial<AccountState>;
-  return (latestPostedDate === undefined || validDate(latestPostedDate)) &&
+  const { identity, latestPostedDate, lastRun, importedHashes } = value as Partial<AccountState>;
+  return typeof identity === 'string' && /^[a-f0-9]{64}$/.test(identity) && (latestPostedDate === undefined || validDate(latestPostedDate)) &&
     typeof lastRun === 'string' && Number.isFinite(Date.parse(lastRun)) &&
     Array.isArray(importedHashes) && importedHashes.every(hash => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash));
 }

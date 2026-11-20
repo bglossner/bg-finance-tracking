@@ -52,7 +52,7 @@ export function routeAccount(routes: Routes, path: string, last4?: string, alias
 // Actual's parser discards account metadata. Read just the routing field and reject multi-account files.
 export function ofxAccountSuffix(contents: Buffer): string | undefined {
   const text = contents.toString('latin1');
-  const identifiers = [...text.matchAll(/<ACCTID\s*>[ \t]*([^<\r\n]*)/gi)];
+  const identifiers = [...text.matchAll(/<ACCTID\s*>([^<]*)/gi)];
   const responses = [...text.matchAll(/<(?:STMTRS|CCSTMTRS)\s*>/g)];
   const bank = text.match(/<BANKMSGSRSV1\s*>\s*<STMTTRNRS\s*>(?:(?!<\/?STMTTRNRS)[^])*?<STMTRS\s*>([^]*?)<\/STMTRS\s*>/);
   const card = text.match(/<CREDITCARDMSGSRSV1\s*>\s*<CCSTMTTRNRS\s*>(?:(?!<\/?CCSTMTTRNRS)[^])*?<CCSTMTRS\s*>([^]*?)<\/CCSTMTRS\s*>/);
@@ -64,7 +64,7 @@ export function ofxAccountSuffix(contents: Buffer): string | undefined {
       [...text.matchAll(/<(?:BANKACCTFROM|CCACCTFROM)\s*>/gi)].length !== 1 ||
       [...text.matchAll(/<(?:BANKMSGSRSV1|CREDITCARDMSGSRSV1)\s*>/gi)].length !== 1 ||
       (identifiers.length === 1 && !/<ACCTID\s*>/.test(account[1])) ||
-      /<\/?(?!(?:BANKID|BRANCHID|ACCTID|ACCTTYPE|ACCTKEY)\s*>)/.test(account[1]) ||
+      /<(?!\/?(?:BANKID|BRANCHID|ACCTID|ACCTTYPE|ACCTKEY)\s*>)/.test(account[1]) ||
       /<!--|<!\[CDATA\[|<INVSTMTMSGSRSV1/i.test(text)) {
     throw new Error('Expected a single checking or card account in the statement.');
   }
@@ -160,7 +160,11 @@ export const chase: SourceAdapter<{ routes: Routes; alias?: string }, ImportRow>
     const directory = await mkdtemp(join(tmpdir(), 'bgfin-statement-'));
     try {
       const snapshot = join(directory, `statement${extension}`);
-      await writeFile(snapshot, contents, { mode: 0o600 });
+      // Actual's SGML conversion cannot close an empty ACCTID leaf.
+      const input = format === 'ofx' && last4 === undefined
+        ? Buffer.from(contents.toString('latin1').replace(/<ACCTID\s*>\s*(?:<\/ACCTID\s*>)?(?=\s*<)/g, ''), 'latin1')
+        : contents;
+      await writeFile(snapshot, input, { mode: 0o600 });
       const parsed = await parseActualFile(snapshot, format);
       const rows = parsed.format === 'csv' ? normalizeCsv(parsed.rows) : normalizeOfx(parsed.rows);
       if (parsed.format === 'ofx') verifyOfxValues(contents, rows);

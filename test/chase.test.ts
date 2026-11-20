@@ -35,6 +35,7 @@ test('matches basenames, account suffixes and explicit aliases; fails closed on 
 test('reads only the last four account digits and rejects multiple account aggregates', async () => {
   const contents = await readFile(fixture('checking-synthetic.qfx'), 'utf8');
   assert.equal(ofxAccountSuffix(Buffer.from(contents)), '1234');
+  assert.equal(ofxAccountSuffix(Buffer.from(contents.replace('0000001234', '\n0000001234</ACCTID>'))), '1234');
   assert.equal(ofxAccountSuffix(Buffer.from(contents.replace('0000001234', 'XXXX1234'))), '1234');
   assert.equal(ofxAccountSuffix(Buffer.from(contents.replace('<ACCTID>0000001234', ''))), undefined);
   assert.throws(() => ofxAccountSuffix(Buffer.from(contents.replaceAll('BANKACCTFROM', 'CCACCTFROM'))), /single checking or card/);

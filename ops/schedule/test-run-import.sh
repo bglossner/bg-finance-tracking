@@ -22,18 +22,24 @@ refuse() {
 
 refuse 'Set BGFIN_DATA_DIR' env -u BGFIN_DATA_DIR "$wrapper"
 refuse 'outside the checkout' env BGFIN_DATA_DIR="$repo" "$wrapper"
+refuse 'outside the checkout' env BGFIN_DATA_DIR="$(dirname "$repo")" "$wrapper"
 export BGFIN_DATA_DIR=$test_root/data
 chmod 0640 "$BGFIN_ENV_FILE"
 refuse 'private owner-only environment file' "$wrapper"
 chmod 0600 "$BGFIN_ENV_FILE"
+log=$BGFIN_DATA_DIR/logs/import.log
+grep -Eq ' files=0 duplicates=0 added=0 updated=0 skipped=0 stale=0 busy=0 failures=1$' "$log"
+lock=$BGFIN_DATA_DIR/scheduled-import.lock
+mkfifo "$lock"
+refuse 'Invalid schedule lockfile' timeout 3 "$wrapper"
+rm -- "$lock"
 
 lock=$BGFIN_DATA_DIR/scheduled-import.lock
 : > "$lock"
 exec 3< "$lock"
 flock -n 3
 "$wrapper"
-log=$BGFIN_DATA_DIR/logs/import.log
-[[ $(wc -l < "$log") == 1 ]]
+[[ $(wc -l < "$log") == 3 ]]
 grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z files=0 duplicates=0 added=0 updated=0 skipped=0 stale=0 busy=1 failures=0$' "$log"
 [[ ! -e $test_root/executed && ! -e $BGFIN_DATA_DIR/inbox ]]
 printf 'PASS held lock, literal secret, and counts-only log\n'

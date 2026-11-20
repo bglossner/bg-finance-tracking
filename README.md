@@ -140,3 +140,69 @@ account's latest successful posted date, successful import time and file hashes.
 If the state file is corrupt, the importer keeps a copy in `state/` and uses the
 configured cutoff until successful imports rebuild the checkpoints. Actual uses
 transaction IDs to deduplicate overlapping exports and retries.
+
+## Scheduling
+
+The hourly job imports completed Chase drops, archives successful files, and
+quarantines rejected files. An empty inbox or an overlapping scheduled run
+exits successfully. Use the same wrapper for manual retries.
+
+### Installation for glossner
+
+Build `bgfin-job` as shown above and configure `config/accounts.json`.
+The wrapper uses the local Docker socket and the existing `bgfin_default`
+network by default. Set `BGFIN_DOCKER_NETWORK` in the env file for a separate
+Docker network. `BGFIN_JOB_IMAGE` can select a different locally built job
+image. `BGFIN_ACCOUNTS_FILE` can select a canonical external mapping file.
+Create a mode `700` intake root and an owner-only mode `600` env
+file outside the checkout. In the env file, use one literal `KEY=value` per
+line, without shell quoting, `export`, or interpolation. Set
+`ACTUAL_SERVER_URL=http://actual-server:5006`, `ACTUAL_SERVER_PASSWORD`,
+`ACTUAL_BUDGET_SYNC_ID`, and `BGFIN_HISTORY_CUTOFF`. The optional settings
+are `ACTUAL_E2E_PASSWORD`, `BGFIN_MIN_FILE_AGE_SECONDS`, and `BGFIN_STALE_DAYS`.
+Use a canonical path for the data root and env file.
+
+Copy both units and adjust `ExecStart` and the two `Environment` paths in
+`bgfin-import.service` for the checkout and private files before activation.
+The service uses `NoNewPrivileges` and `UMask`. Filesystem namespace hardening
+such as `ProtectSystem` requires user namespace support for user services and
+is omitted for compatibility with Amazon Linux 2.
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp ops/schedule/bgfin-import.{service,timer} ~/.config/systemd/user/
+# Edit the copied service paths if needed, then activate the timer.
+systemctl --user daemon-reload
+systemctl --user enable --now bgfin-import.timer
+systemctl --user list-timers bgfin-import.timer
+systemctl --user status bgfin-import.timer bgfin-import.service
+journalctl --user -u bgfin-import.service
+```
+
+For runs while glossner is logged out, glossner can opt in with
+`loginctl enable-linger glossner`. The persistent timer catches a missed
+calendar trigger when the user manager comes back. The cron alternative in
+`ops/schedule/crontab.example` uses the same wrapper and lock. Standard cron
+skips missed triggers. On return, run the wrapper once with the same paths to
+catch up. Install a single scheduler.
+
+Check `logs/import.log` under the intake root for UTC run timestamps and
+aggregate counts. It rotates at 64 KiB and keeps one previous file. A nonzero
+`stale` count means one or more accounts lack a successful posted date or are
+older than `BGFIN_STALE_DAYS`. The manual intake command prints the affected
+aliases and next export dates. A nonzero `failures` count marks a failed job.
+
+To uninstall the timer, glossner runs:
+
+```sh
+systemctl --user disable --now bgfin-import.timer
+rm ~/.config/systemd/user/bgfin-import.{service,timer}
+systemctl --user daemon-reload
+```
+
+Remove the example entry instead when using cron. If linger was enabled solely
+for this job, glossner can opt out with `loginctl disable-linger glossner`.
+
+For bills, set recurring [Actual Budget schedules](https://actualbudget.org/docs/advanced/schedules/)
+and add a calendar reminder before each due date. Keep automatic posting for
+bills where it is wanted and test delivery with a calendar reminder.

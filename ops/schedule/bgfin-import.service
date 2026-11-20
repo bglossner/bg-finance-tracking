@@ -1,0 +1,11 @@
+[Unit]
+Description=Import finance statements from the drop folder
+
+[Service]
+Type=oneshot
+Environment=BGFIN_DATA_DIR=%h/.local/share/bgfin-intake
+Environment=BGFIN_ENV_FILE=%h/.config/bgfin/import.env
+ExecStart=/bin/bash -p %h/github/bg-finance-tracking/ops/schedule/run-import.sh
+UMask=0077
+NoNewPrivileges=true
+TimeoutStartSec=13min

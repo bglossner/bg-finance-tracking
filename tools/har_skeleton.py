@@ -1,0 +1,779 @@
+#!/usr/bin/env python3
+"""Produce a checked, structural JSON outline of a browser HAR."""
+
+import argparse
+import base64
+from collections import Counter, defaultdict
+from datetime import datetime
+from email import policy
+from email.message import Message
+from email.parser import BytesParser
+from email.utils import collapse_rfc2231_value
+import html
+from ipaddress import IPv6Address
+import json
+import math
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+from urllib.parse import parse_qsl, unquote, urlsplit
+from xml.parsers import expat
+
+
+BANK_DOMAINS = ('chase.com', 'jpmorgan.com', 'jpmorganchase.com', 'jpmchase.com')
+METHODS = frozenset('GET HEAD POST PUT DELETE CONNECT OPTIONS TRACE PATCH PROPFIND '
+                    'PROPPATCH MKCOL COPY MOVE LOCK UNLOCK REPORT SEARCH'.split())
+HTTP_TOKEN = re.compile(r"[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}")
+NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_.:\-\[\]]{0,127}')
+HOST = re.compile(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?')
+PATH = re.compile(r'(?:/(?:[A-Za-z]{1,11}|<id>|<token>)?)+')
+MIME = re.compile(r'(?:application|audio|example|font|image|message|model|multipart|text|video)'
+                  r'/[a-z0-9][a-z0-9.+-]{0,63}')
+FORM = 'application/x-www-form-urlencoded'
+MULTIPART = 'multipart/form-data'
+OFX_MIMES = frozenset('application/ofx application/qfx application/x-ofx application/x-qfx '
+                      'application/vnd.intu.qfx application/vnd.intu.ofx text/ofx text/x-ofx'.split())
+DOWNLOAD_MIMES = frozenset({'', 'application/octet-stream', 'text/plain', 'application/download',
+                           'application/x-download', 'application/force-download',
+                           'application/x-force-download', 'application/binary'})
+WEB_MIMES = frozenset({'text/html', 'application/xhtml+xml', 'text/css', 'text/javascript',
+                       'application/javascript', 'text/ecmascript', 'application/ecmascript',
+                       'application/x-javascript'})
+OFX_START = re.compile(rb'(?:OFXHEADER[ \t]*:|<OFX(?:[\s>]))', re.IGNORECASE)
+SGML = re.compile(r'<!--(?P<comment>.*?)-->|<!\[CDATA\[(?P<cdata>.*?)\]\]>|'
+                  r'<(?P<closing>/)?(?P<tag>[A-Za-z_][A-Za-z0-9_.:-]*)\s*>', re.DOTALL)
+
+EMAIL = re.compile(r"[\w.!#$%&'*+/=?^`{|}~-]{1,64}@[\w-]+(?:\.[\w-]+)*")
+DATE = re.compile(r'(?<!\d)(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|'
+                  r'\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|'
+                  r'(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))(?!\d)')
+TEXT_DATE = re.compile(
+    r'(?<![A-Za-z])(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|'
+    r'jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+    r'[-_. /]+(?:0?[1-9]|[12][0-9]|3[01])(?:[,._ /-]+\d{2,4})?(?!\d)', re.I)
+MONEY = re.compile(r'(?:\$|\bUSD)\s*[+-]?\s*(?:\d|[.,]\d)|'
+                   r'(?<!\d)\d+(?:,\d{3})*\.\d{2}(?!\d)', re.I)
+JWT = re.compile(r'eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}', re.I)
+BLOB = re.compile(r'[A-Za-z0-9+/_-]{16,}={0,2}')
+DIGITS = re.compile(r'\d{4,}')
+UUID = re.compile(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', re.I)
+HAR_TIME = re.compile(r'(?P<clock>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})'
+                      r'(?:\.(?P<fraction>\d+))?(?P<offset>Z|[+-]\d{2}:?\d{2})')
+PATH_WORDS = frozenset('''
+    account accounts activity api app assets banking card cards checking customer documents
+    download downloads export exports help login logout metrics ofx payment payments portal profile
+    qfx report reports savings scripts secure service services session statement statements svc
+    transaction user users
+'''.split())
+HAR_KEYS = frozenset('''
+    bodySize connection headersSize httpVersion mimeType queryString redirectURL serverIPAddress
+    startedDateTime statusText
+'''.casefold().split())
+
+# Common structural spellings that overlap the broad base64 alphabet.
+HEADER_BLOB_EXCEPTIONS = frozenset('''
+    access-control-allow-credentials access-control-allow-headers access-control-allow-methods
+    access-control-allow-origin access-control-expose-headers access-control-max-age
+    access-control-request-headers access-control-request-method attribution-reporting-eligible
+    content-disposition content-encoding content-language content-location content-security-policy
+    content-security-policy-report-only content-transfer-encoding cross-origin-embedder-policy
+    cross-origin-embedder-policy-report-only cross-origin-opener-policy cross-origin-opener-policy-report-only
+    cross-origin-resource-policy if-modified-since if-unmodified-since origin-agent-cluster permissions-policy
+    proxy-authorization reporting-endpoints sec-ch-ua-architecture
+    sec-ch-ua-full-version sec-ch-ua-full-version-list sec-ch-ua-platform sec-ch-ua-platform-version
+    service-worker-allowed speculation-rules strict-transport-security timing-allow-origin transfer-encoding
+    upgrade-insecure-requests x-content-type-options x-csrf-protection x-requested-with x-xss-protection
+'''.split())
+FIXED_FIELDS = frozenset('''
+    entries path_counts index relative_seconds duration_ms_bucket origin path method query
+    request response headers cookie_count set_cookie_count content_type accept body status mime size_bucket
+    disposition name type count fields first count_bucket
+'''.split())
+NUMERIC_LOCATIONS = re.compile(
+    r'\$\.(?:entries\[\d+\]\.(?:index|relative_seconds|request\.cookie_count|'
+    r'response\.(?:set_cookie_count|status))|path_counts\[\d+\]\.count)')
+SIZE_BOUNDS = (128, 1024, 8192, 65536)
+DURATION_BOUNDS = (10, 100, 1000, 10000)
+COUNT_BOUNDS = (1, 5, 20, 100)
+
+
+class InvalidInput(ValueError):
+    pass
+
+
+class InvalidArguments(ValueError):
+    pass
+
+
+class ArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise InvalidArguments
+
+
+class InputStrings:
+    """Track data strings independently of the fields carried into the outline."""
+
+    def __init__(self, document):
+        self.strings = Counter()
+        self.short_secrets = set()
+        self.remember(document)
+
+    def remember(self, value, *, keys=True):
+        if isinstance(value, str):
+            if len(value) >= 8:
+                self.strings[value.casefold()] += 1
+        elif isinstance(value, list):
+            for child in value:
+                self.remember(child, keys=keys)
+        elif isinstance(value, dict):
+            for key, child in value.items():
+                if keys and key.casefold() not in HAR_KEYS:
+                    self.remember(key)
+                self.remember(child, keys=keys)
+
+    def allow_occurrence(self, value):
+        """Mark one actual input occurrence as an approved structural source."""
+        if len(value) >= 8:
+            self.strings[value.casefold()] -= 1
+
+    def remember_secret(self, value):
+        if 0 < len(value) < 8:
+            self.short_secrets.add(value.casefold())
+        else:
+            self.remember(value)
+
+    def forbidden_prefixes(self):
+        prefixes = defaultdict(list)
+        for value, count in self.strings.items():
+            if count > 0:
+                prefixes[value[:8]].append(value)
+        return prefixes
+
+
+def require(value, kind):
+    if type(value) is not kind:
+        raise InvalidInput
+    return value
+
+
+def unique_object(pairs):
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise InvalidInput
+    return result
+
+
+def invalid_constant(_value):
+    raise InvalidInput
+
+
+def finite_float(value):
+    number = float(value)
+    if not math.isfinite(number):
+        raise InvalidInput
+    return number
+
+
+def parse_json(value):
+    return json.loads(value, object_pairs_hook=unique_object,
+                      parse_constant=invalid_constant, parse_float=finite_float)
+
+
+def bucket(number, bounds):
+    if number < 0:
+        return 'unknown'
+    if number == 0:
+        return 'empty'
+    for bound in bounds:
+        if number <= bound:
+            return f'le-{bound}'
+    return f'gt-{bounds[-1]}'
+
+
+def bucket_names(bounds):
+    return frozenset(bucket(n, bounds) for n in (-1, 0, *bounds, bounds[-1] + 1))
+
+
+SAFE_BUCKETS = {'size_bucket': bucket_names(SIZE_BOUNDS),
+                'duration_ms_bucket': bucket_names(DURATION_BOUNDS),
+                'count_bucket': bucket_names(COUNT_BOUNDS)}
+
+
+def has_email(value):
+    return '@' in value and EMAIL.search(value) is not None
+
+
+def value_hint(value):
+    if value is None:
+        return '<null>'
+    if isinstance(value, bool):
+        return '<bool>'
+    if isinstance(value, float):
+        return '<num>'
+    if isinstance(value, int):
+        return '<id>' if abs(value) >= 10**8 else '<int>'
+    if value.lower() in ('true', 'false'):
+        return '<bool>'
+    if DATE.fullmatch(value) or TEXT_DATE.fullmatch(value) or re.fullmatch(DATE.pattern + r'[Tt].+', value):
+        return '<date>'
+    if re.fullmatch(r'[+-]?\d+', value):
+        digits = value.lstrip('+-')
+        return '<id>' if len(digits) >= 8 or (len(digits) >= 4 and digits.startswith('0')) else '<int>'
+    if UUID.fullmatch(value) or has_email(value) or re.fullmatch(r'[A-Za-z0-9+/_-]{12,}={0,2}', value):
+        return '<id>'
+    return f'<str:{bucket(len(value), (8, 32, 128))}>'
+
+
+def json_shape(value):
+    if isinstance(value, dict):
+        return {'fields': [{'name': key, 'type': json_shape(child)}
+                           for key, child in sorted(value.items()) if not key.startswith('_')]}
+    if isinstance(value, list):
+        result = {'count_bucket': bucket(len(value), COUNT_BOUNDS)}
+        if value:
+            result['first'] = json_shape(value[0])
+        return result
+    return value_hint(value)
+
+
+def mime_type(value):
+    mime = value.partition(';')[0].strip().lower()
+    return mime if MIME.fullmatch(mime) else ''
+
+
+def accept_type(value):
+    candidate = value.strip().lower()
+    return candidate if MIME.fullmatch(candidate) or candidate == '*/*' else ''
+
+
+def encoded_pairs(text, sources):
+    if re.search(r'%(?![0-9a-fA-F]{2})', text):
+        raise InvalidInput
+    pairs = parse_qsl(text, keep_blank_values=True, errors='strict')
+    for _, value in pairs:
+        sources.remember(value)
+    return pairs
+
+
+def declared_pairs(items, sources):
+    pairs = []
+    for item in require(items, list):
+        item = require(item, dict)
+        name = require(item['name'], str)
+        value = require(item.get('value', ''), str)
+        sources.allow_occurrence(name)
+        pairs.append((name, value))
+    return pairs
+
+
+def pair_shape(pairs):
+    return [{'name': name, 'type': value_hint(value)}
+            for name, value in sorted(pairs, key=lambda pair: pair[0])]
+
+
+def url_shape(raw, include_host, sources):
+    if re.search(r'[\x00-\x20\x7f]', raw):
+        raise InvalidInput
+    url = urlsplit(raw)
+    if url.scheme not in ('http', 'https', 'ws', 'wss'):
+        if url.scheme:
+            return '<third-party>', '/<token>', [], '', ''
+        raise InvalidInput
+    host = (url.hostname or '').removesuffix('.')
+    if ':' in host:
+        if '%' in host:
+            raise InvalidInput
+        host = f'[{IPv6Address(host)}]'
+    elif len(host) > 253 or not all(HOST.fullmatch(label) for label in host.split('.')):
+        raise InvalidInput
+    # Accessing port validates it even though the outline omits it.
+    _ = url.port
+    authority = f'{url.scheme}://{host}'
+    allowed = any(host == bank or host.endswith('.' + bank) for bank in BANK_DOMAINS)
+    if include_host and include_host.fullmatch(host):
+        allowed = True
+    sources.allow_occurrence(raw)
+    if not allowed:
+        sources.remember(host)
+    for value in (url.username, url.password):
+        if value:
+            sources.remember_secret(unquote(value, errors='strict'))
+    if url.fragment:
+        sources.remember(unquote(url.fragment, errors='strict'))
+    path = []
+    for segment in (url.path or '/').split('/'):
+        if re.search(r'%(?![0-9a-fA-F]{2})', segment):
+            raise InvalidInput
+        decoded = unquote(segment, errors='strict')
+        if not decoded or re.fullmatch(r'[A-Za-z]{1,11}', decoded):
+            path.append(decoded)
+        else:
+            sources.remember(decoded)
+            is_id = re.search(r'\d{3,}', decoded) or UUID.fullmatch(decoded) or has_email(decoded)
+            path.append('<id>' if is_id else '<token>')
+    target = url.path or '/'
+    if url.query:
+        target += '?' + url.query
+    return (authority if allowed else '<third-party>', '/'.join(path),
+            encoded_pairs(url.query, sources), authority, target)
+
+
+def remember_cookie(value, sources):
+    name, sep, content = value.strip().partition('=')
+    if not sep or not name.strip():
+        return 0
+    sources.remember_secret(name.strip())
+    sources.remember_secret(content.strip().strip('"'))
+    return 1
+
+
+def mime_header(value, header, sources):
+    if '\r' in value or '\n' in value:
+        raise InvalidInput
+    message = Message(policy=policy.compat32)
+    message[header] = value
+    for _, parameter in message.get_params(header=header, failobj=[])[1:]:
+        sources.remember(collapse_rfc2231_value(parameter, errors='strict'))
+    return message
+
+
+def header_shape(side, sources, *, response=False, authority='', target=''):
+    names = set()
+    values = defaultdict(list)
+    for header in require(side.get('headers', []), list):
+        header = require(header, dict)
+        original = require(header['name'], str)
+        value = require(header['value'], str)
+        name = original.lower()
+        values[name].append(value)
+        sources.allow_occurrence(original)
+        if (name == 'content-type' and mime_type(value)) or (
+                not response and name == 'accept' and accept_type(value)):
+            sources.allow_occurrence(value)
+            if name == 'content-type' and ';' in value:
+                mime_header(value, 'Content-Type', sources)
+        elif name in ('authorization', 'proxy-authorization'):
+            credentials = value.split(maxsplit=1)
+            if len(credentials) == 2:
+                sources.remember_secret(credentials[1].strip())
+        if not response and authority and (
+                (name in ('host', ':authority') and value.lower() == authority.split('://')[1])
+                or (name in ('origin', 'referer') and value.lower() == authority)
+                or (name == ':path' and value == target)):
+            sources.allow_occurrence(value)
+        if name != ('set-cookie' if response else 'cookie'):
+            names.add(name)
+    cookies = require(side.get('cookies', []), list)
+    for cookie in cookies:
+        cookie = require(cookie, dict)
+        sources.remember_secret(require(cookie['name'], str))
+        sources.remember_secret(require(cookie['value'], str))
+    cookie_count = len(cookies)
+    if response and 'set-cookie' in values:
+        cookie_count = sum(remember_cookie(line.partition(';')[0], sources)
+                           for value in values['set-cookie'] for line in value.splitlines())
+    elif not response and 'cookie' in values:
+        cookie_count = sum(remember_cookie(part, sources)
+                           for value in values['cookie'] for part in value.split(';'))
+    return {'headers': sorted(names), 'set_cookie_count' if response else 'cookie_count': cookie_count}, values
+
+
+def first_header(values, name):
+    return values[name][0] if name in values else ''
+
+
+def multipart_names(text, raw_mime, sources):
+    if '\r' in raw_mime or '\n' in raw_mime:
+        raise InvalidInput
+    message = BytesParser(policy=policy.default).parsebytes(
+        f'Content-Type: {raw_mime}\r\n\r\n{text}'.encode('utf-8'))
+    if not message.is_multipart() or message.defects:
+        raise InvalidInput
+    names = []
+    for part in message.iter_parts():
+        name = part.get_param('name', header='content-disposition')
+        if part.defects or part.get_content_disposition() != 'form-data' or not isinstance(name, str):
+            raise InvalidInput
+        names.append(name)
+        sources.remember(part.get_filename())
+        payload = part.get_payload(decode=True)
+        if payload is not None:
+            sources.remember(payload.decode('utf-8', errors='replace'))
+        if part.defects:
+            raise InvalidInput
+    return names
+
+
+def request_body(request, headers, sources):
+    if 'postData' not in request:
+        return {'body': '<omitted>'}
+    post = require(request['postData'], dict)
+    declared_mime = require(post.get('mimeType', ''), str)
+    raw_mime = declared_mime or first_header(headers, 'content-type')
+    mime = mime_type(raw_mime)
+    if declared_mime and mime:
+        sources.allow_occurrence(declared_mime)
+        if ';' in declared_mime:
+            mime_header(declared_mime, 'Content-Type', sources)
+    text = require(post.get('text', ''), str)
+    if mime == FORM:
+        declared = declared_pairs(post.get('params', []), sources)
+        body = pair_shape(encoded_pairs(text, sources) if text else declared)
+    elif mime == 'application/json' or mime.endswith('+json'):
+        body = parsed_json_shape(text, sources)
+    elif mime == MULTIPART:
+        declared = declared_pairs(post.get('params', []), sources)
+        names = multipart_names(text, raw_mime, sources) if text else [name for name, _ in declared]
+        body = [{'name': name} for name in sorted(names)]
+    else:
+        size = require(request.get('bodySize', -1), int)
+        if size < 0 and text:
+            size = len(text.encode('utf-8'))
+        body = f'<body:{mime or "unknown"}:{bucket(size, SIZE_BOUNDS)}>'
+    return {'mime': mime or '<omitted>', 'body': body}
+
+
+def parsed_json_shape(text, sources):
+    if not text:
+        return '<omitted>'
+    data = parse_json(text)
+    sources.remember(data, keys=False)
+    return json_shape(data)
+
+
+def remember_text(text, sources):
+    trimmed = text.strip()
+    sources.remember(trimmed)
+    for line in text.splitlines():
+        part = line.strip()
+        if part != trimmed:
+            sources.remember(part)
+
+
+def xml_tags(text, sources):
+    tags = {}
+    parser = expat.ParserCreate()
+    parser.buffer_text = True
+
+    def start_tag(name, attrs):
+        tags[name] = None
+        for value in attrs.values():
+            sources.remember(value)
+
+    def reject_doctype(*_args):
+        raise InvalidInput
+
+    parser.StartElementHandler = start_tag
+    parser.StartDoctypeDeclHandler = reject_doctype
+    parser.CharacterDataHandler = lambda value: remember_text(value, sources)
+    parser.CommentHandler = lambda value: remember_text(value, sources)
+    parser.ProcessingInstructionHandler = lambda _, value: remember_text(value, sources)
+    parser.Parse(text, True)
+    return list(tags)
+
+
+def ofx_tags(text, sources):
+    try:
+        document = text.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        document = text.decode('latin-1')
+    tags = {}
+    end = 0
+    for match in SGML.finditer(document):
+        gap = document[end:match.start()]
+        if '<' in gap:
+            raise InvalidInput
+        remember_text(html.unescape(gap), sources)
+        if match['tag'] and not match['closing']:
+            tags.setdefault(match['tag'].upper(), None)
+        elif not match['tag']:
+            remember_text(match['comment'] or match['cdata'] or '', sources)
+        end = match.end()
+    tail = document[end:]
+    if '<' in tail or next(iter(tags), None) != 'OFX':
+        raise InvalidInput
+    remember_text(tail, sources)
+    return list(tags)
+
+
+def disposition_shape(value, sources):
+    message = mime_header(value, 'Content-Disposition', sources)
+    kind = message.get_content_disposition()
+    if kind not in ('attachment', 'inline'):
+        return '<omitted>', ''
+    extended = next((param for key, param in message.get_params(header='Content-Disposition', failobj=[])[1:]
+                     if key == 'filename' and isinstance(param, tuple)), None)
+    filename = collapse_rfc2231_value(extended, errors='strict') if extended else message.get_filename() or ''
+    extension = re.search(r'\.[a-z][a-z0-9]{0,5}\Z', filename.lower())
+    if extension:
+        return f'{kind}; filename=<name>{extension[0]}', extension[0]
+    return kind, ''
+
+
+def response_shape(response, sources):
+    result, headers = header_shape(response, sources, response=True)
+    content = require(response.get('content', {}), dict)
+    declared_mime = require(content.get('mimeType', ''), str)
+    mime = mime_type(declared_mime) or mime_type(first_header(headers, 'content-type'))
+    if mime_type(declared_mime):
+        sources.allow_occurrence(declared_mime)
+        if ';' in declared_mime:
+            mime_header(declared_mime, 'Content-Type', sources)
+    status = require(response['status'], int)
+    if status != 0 and not 100 <= status <= 599:
+        raise InvalidInput
+    size = require(content.get('size', -1), int)
+    if size < 0:
+        size = require(response.get('bodySize', -1), int)
+    disposition, extension = disposition_shape(first_header(headers, 'content-disposition'), sources)
+    text = require(content.get('text', ''), str)
+    encoding = require(content.get('encoding', ''), str)
+    body = '<omitted>'
+    is_json = mime == 'application/json' or mime.endswith('+json')
+    is_xml = (mime in ('text/xml', 'application/xml') or mime.endswith('+xml')) and mime not in WEB_MIMES
+    qfx_filename = extension in ('.ofx', '.qfx')
+    opaque = mime in WEB_MIMES or mime.startswith(('audio/', 'font/', 'image/', 'video/'))
+    possible_ofx = mime in DOWNLOAD_MIMES or (qfx_filename and not opaque)
+    declared_ofx = mime in OFX_MIMES or (qfx_filename and mime in DOWNLOAD_MIMES)
+    if text and (is_json or is_xml or declared_ofx or possible_ofx):
+        if encoding not in ('', 'base64'):
+            raise InvalidInput
+        decoded = base64.b64decode(text, validate=True) if encoding == 'base64' else text.encode('utf-8')
+        if is_json:
+            body = parsed_json_shape(decoded, sources)
+        elif is_xml:
+            body = xml_tags(decoded if encoding else text, sources)
+        else:
+            start = decoded.removeprefix(b'\xef\xbb\xbf').lstrip()
+            if start.startswith(b'<?xml'):
+                tags = xml_tags(decoded if encoding else text, sources)
+                if tags[0].upper() == 'OFX':
+                    body = tags
+                elif declared_ofx:
+                    raise InvalidInput
+            elif declared_ofx or OFX_START.match(start):
+                body = ofx_tags(decoded, sources)
+    result.update(status=status, mime=mime or '<omitted>', size_bucket=bucket(size, SIZE_BOUNDS),
+                  disposition=disposition, body=body)
+    return result
+
+
+def har_start(value):
+    timestamp = HAR_TIME.fullmatch(require(value, str))
+    if not timestamp:
+        raise InvalidInput
+    fraction = (timestamp['fraction'] or '')[:6].ljust(6, '0')
+    offset = timestamp['offset']
+    if offset == 'Z':
+        offset = '+00:00'
+    elif len(offset) == 5:
+        offset = offset[:3] + ':' + offset[3:]
+    return datetime.fromisoformat(f"{timestamp['clock']}.{fraction}{offset}")
+
+
+def make_skeleton(document, include_host, sources):
+    log = require(require(document, dict)['log'], dict)
+    entries = require(log['entries'], list)
+    output = []
+    counts = Counter()
+    first = None
+    for index, entry in enumerate(entries):
+        entry = require(entry, dict)
+        started = har_start(entry['startedDateTime'])
+        if first is None:
+            first = started
+        request = require(entry['request'], dict)
+        method = require(request['method'], str)
+        if not HTTP_TOKEN.fullmatch(method):
+            raise InvalidInput
+        origin, path, pairs, authority, target = url_shape(require(request['url'], str), include_host, sources)
+        declared = declared_pairs(request.get('queryString', []), sources)
+        request_info, headers = header_shape(request, sources, authority=authority, target=target)
+        content_type = mime_type(first_header(headers, 'content-type'))
+        accept = accept_type(first_header(headers, 'accept'))
+        if content_type:
+            request_info['content_type'] = content_type
+        if accept:
+            request_info['accept'] = accept
+        request_info.update(request_body(request, headers, sources))
+        response = response_shape(require(entry['response'], dict), sources)
+        duration = entry.get('time', -1)
+        if type(duration) not in (int, float):
+            raise InvalidInput
+        output.append({'index': index, 'relative_seconds': round((started - first).total_seconds()),
+                       'duration_ms_bucket': bucket(duration, DURATION_BOUNDS),
+                       'method': method if method in METHODS else '<method>',
+                       'origin': origin, 'path': path, 'query': pair_shape(pairs or declared),
+                       'request': request_info, 'response': response})
+        counts[path] += 1
+    return {'entries': output, 'path_counts': [{'path': path, 'count': count}
+                                               for path, count in sorted(counts.items())]}
+
+
+def self_check(output, sources):
+    forbidden = sources.forbidden_prefixes()
+    offenders = []
+
+    def scan(value, location, field):
+        if isinstance(value, dict):
+            for index, (key, child) in enumerate(value.items()):
+                if key in FIXED_FIELDS:
+                    scan(child, f'{location}.{key}', key)
+                else:
+                    if suspect(key):
+                        offenders.append(f'{location}.key[{index}]')
+                    scan(child, f'{location}.value[{index}]', '')
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                scan(item, f'{location}[{index}]', field)
+        elif isinstance(value, str):
+            if field in SAFE_BUCKETS and value in SAFE_BUCKETS[field]:
+                return
+            if field == 'body' and value.startswith('<body:') and value.endswith('>'):
+                mime, _, size = value[6:-1].rpartition(':')
+                if size in SAFE_BUCKETS['size_bucket'] and (mime == 'unknown' or MIME.fullmatch(mime)):
+                    value = mime
+            valid = field not in ('name', 'headers') or name_ok(value, field)
+            if field == 'path':
+                valid = bool(PATH.fullmatch(value))
+            if not valid or suspect(value, field):
+                offenders.append(location)
+        elif type(value) is not int or not NUMERIC_LOCATIONS.fullmatch(location):
+            offenders.append(location)
+
+    def suspect(value, field=''):
+        lowered = value.casefold()
+        if not value.isascii() or re.search(r'[\x00-\x1f\x7f]', value):
+            return True
+        if has_email(value) or any(pattern.search(value) for pattern in (DIGITS, DATE, TEXT_DATE, MONEY, JWT)):
+            return True
+        if blob_like(value, field):
+            return True
+        if sources.short_secrets and copied_short_secret(lowered, field, sources.short_secrets):
+            return True
+        return any(lowered.startswith(source, index)
+                   for index in range(len(lowered) - 7)
+                   for source in forbidden.get(lowered[index:index + 8], ()))
+
+    scan(output, '$', '')
+    return sorted(set(offenders))
+
+
+def copied_short_secret(value, field, secrets):
+    if field == 'path':
+        atoms = [part for part in value.split('/') if part not in ('<id>', '<token>')]
+    elif field == 'origin':
+        host = value.partition('://')[2]
+        atoms = [value, host, *host.split('.')]
+    elif field in ('mime', 'accept', 'content_type', 'body') and MIME.fullmatch(value):
+        subtype = value.partition('/')[2]
+        atoms = [value, subtype, *re.split(r'[.+]', subtype)]
+    elif field == 'disposition' and 'filename=<name>.' in value:
+        extension = value.rpartition('.')[2]
+        atoms = [extension, '.' + extension]
+    elif field in ('name', 'headers', 'body'):
+        atoms = [value]
+    else:
+        return False
+    return not secrets.isdisjoint(atoms)
+
+
+def blob_like(value, field):
+    exceptions = ()
+    if field == 'path':
+        # Known route words and placeholders separate adjacent candidate segments.
+        # Check across slashes elsewhere because slash is a base64 character.
+        candidate = '/'.join('.' if part.casefold() in PATH_WORDS else part
+                             for part in value.strip('/').split('/'))
+        pieces = candidate.split('.')
+    elif field in ('origin', 'accept', 'content_type', 'mime', 'body') and (
+            '://' in value or MIME.fullmatch(value) or value == '*/*'):
+        pieces = value.split('/')
+        if MIME.fullmatch(value):
+            exceptions = ('x-www-form-urlencoded',)
+    else:
+        pieces = [value]
+        if field == 'headers':
+            exceptions = HEADER_BLOB_EXCEPTIONS
+        elif field == 'body':
+            exceptions = ('creditcardmsgsrqv1', 'creditcardmsgsrsv1')
+    for piece in pieces:
+        for match in BLOB.finditer(piece.strip('/')):
+            if len(match[0].strip('/')) >= 16 and match[0].casefold() not in exceptions:
+                return True
+    return False
+
+
+def name_ok(value, field):
+    if field == 'headers':
+        return bool(HTTP_TOKEN.fullmatch(value) or (value.startswith(':') and HTTP_TOKEN.fullmatch(value[1:])))
+    return bool(NAME.fullmatch(value))
+
+
+def write_private(path, payload, force):
+    fd, temporary = tempfile.mkstemp(prefix='.har-skeleton-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as output:
+            if os.name == 'posix':
+                os.fchmod(output.fileno(), 0o600)
+            output.write(payload)
+        if force:
+            os.replace(temporary, path)
+        elif os.name == 'nt':
+            os.rename(temporary, path)  # On Windows rename fails if the destination exists.
+        else:
+            os.link(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def main():
+    parser = ArgumentParser(prog='har_skeleton.py', allow_abbrev=False,
+                            description='Create a structural JSON outline of a local HAR.',
+                            epilog='Review the output yourself before sharing. Delete the HAR afterwards. '
+                                   'This tool does not make the HAR itself safe.')
+    parser.add_argument('input', metavar='in.har', type=Path)
+    parser.add_argument('-o', metavar='out.json', type=Path, help='write to a private file instead of stdout')
+    parser.add_argument('--include-host-pattern', metavar='REGEX', help='retain normalized hosts matching the full regex')
+    parser.add_argument('--force', action='store_true', help='replace an existing output file')
+    try:
+        args = parser.parse_args()
+        if args.force and args.o is None:
+            raise InvalidArguments
+        include_host = re.compile(args.include_host_pattern, re.ASCII) if args.include_host_pattern else None
+    except (InvalidArguments, re.error, OverflowError, RecursionError):
+        print('Invalid arguments. See --help.', file=sys.stderr)
+        return 2
+    try:
+        document = parse_json(args.input.read_text(encoding='utf-8-sig'))
+        sources = InputStrings(document)
+        outline = make_skeleton(document, include_host, sources)
+        offenders = self_check(outline, sources)
+        if offenders:
+            print('\n'.join(offenders), file=sys.stderr)
+            return 1
+        payload = json.dumps(outline, indent=2, ensure_ascii=True) + '\n'
+    except (Exception, KeyboardInterrupt):
+        print('Could not read or process the HAR.', file=sys.stderr)
+        return 1
+    try:
+        if args.o is None:
+            sys.stdout.write(payload)
+            sys.stdout.flush()
+        else:
+            if args.o.exists() and args.input.samefile(args.o):
+                raise InvalidArguments
+            write_private(args.o, payload, args.force)
+    except FileExistsError:
+        print('Output already exists. Use --force to replace it.', file=sys.stderr)
+        return 1
+    except (Exception, KeyboardInterrupt):
+        print('Could not write the skeleton.', file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -50,6 +50,8 @@ Never commit real financial data or credentials. Keep exports, local account map
 
 ## Chase statements
 
+For private browser capture analysis, see the [Chase HAR skeleton guide](tools/HAR_SKELETON.md).
+
 Copy `config/accounts.example.json` to `config/accounts.json` and set each alias's
 `actualAccount` to a unique open Actual account name or its ID. `last4` matches a
 QFX/OFX account suffix and `filename` is a case-sensitive glob for the basename.

@@ -209,6 +209,8 @@ bills where it is wanted and test delivery with a calendar reminder.
 
 ## Real budget setup (glossner)
 
+For setup on a Windows computer, follow the [Windows 11 and WSL 2 guide](WINDOWS_SETUP.md).
+
 1. On the cloud desktop, run setup from the repository root. It requires
    Docker Compose v2.24.4 or later, `ss`, and `jq`.
 

@@ -21,11 +21,15 @@ case "$1 $2" in
         [[ $3 == bgfin-real ]]
         case " $* " in
             *' version '*) ;;
-            *' up '*--no-recreate*' actual-server '*) : > "$TEST_ROOT/running" ;;
+            *' up '*--no-recreate*' actual-server '*) : > "$TEST_ROOT/running"; rm -f -- "$TEST_ROOT/unhealthy" ;;
             *) exit 11 ;;
         esac ;;
     'ps --all')
-        [[ " $* " == *' label=com.docker.compose.project=bgfin-real '* ]]
+        if [[ " $* " == *' volume=/data '* ]]; then
+            if [[ -e $TEST_ROOT/foreign-mount ]]; then printf 'fake-foreign-id\n'; fi
+        else
+            [[ " $* " == *' label=com.docker.compose.project=bgfin-real '* ]]
+        fi
         if [[ -e $TEST_ROOT/running ]]; then printf 'fake-server-id\n'; fi ;;
     'network ls') ;;
     'image ls') [[ $5 == reference=bgfin-job:real ]]
@@ -35,6 +39,8 @@ case "$1 $2" in
         case "$4" in
             *'.Mounts'*) printf '%s\n' "$BGFIN_REAL_ROOT/actual-data" ;;
             '{{.State.Running}}') printf 'true\n' ;;
+            *'.State.Health'*)
+                if [[ -e $TEST_ROOT/unhealthy ]]; then printf 'unhealthy\n'; else printf 'healthy\n'; fi ;;
             '{{json .HostConfig.PortBindings}}') printf '%s\n' '{"5006/tcp":[{"HostIp":"127.0.0.1","HostPort":"5999"}]}' ;;
             'Actual state:'*) printf 'Actual state: running\nPort: 127.0.0.1:5999\n' ;;
             *'.NetworkSettings.Networks'*) printf 'fake-network-id\n' ;;
@@ -81,6 +87,10 @@ ln -s /tmp "$TEST_ROOT/tmp-link"
 refuse 'outside /tmp' env BGFIN_REAL_ROOT="$TEST_ROOT/tmp-link/do-not-create" "$ops_real/setup.sh"
 [[ ! -e $TEST_ROOT/docker-calls ]]
 
+: > "$TEST_ROOT/foreign-mount"
+refuse 'overlaps another container' "$ops_real/setup.sh"
+[[ ! -e $BGFIN_REAL_ROOT ]]
+rm -- "$TEST_ROOT/foreign-mount"
 : > "$TEST_ROOT/busy-port"
 refuse 'TCP port 5999 is in use' "$ops_real/setup.sh"
 rm -- "$TEST_ROOT/busy-port"
@@ -103,6 +113,10 @@ second=$("$ops_real/setup.sh")
 [[ $second == *'Kept the running Actual server.'* && $before == "$(sha256sum -- "$settings" "$accounts")" ]]
 [[ $(grep -c '^build$' "$TEST_ROOT/docker-calls") == 1 ]]
 printf 'PASS existing files and running server kept\n'
+: > "$TEST_ROOT/unhealthy"
+"$ops_real/setup.sh" > /dev/null
+[[ ! -e $TEST_ROOT/unhealthy ]]
+printf 'PASS retry waits for an unhealthy running server without recreation\n'
 
 : > "$TEST_ROOT/docker-calls"
 refuse 'no dry-run mode' "$ops_real/import.sh" --dry-run
@@ -113,7 +127,10 @@ sed -i 's/^ACTUAL_BUDGET_SYNC_ID=$/ACTUAL_BUDGET_SYNC_ID=fake-sync-id/' "$settin
 sed -i 's/^BGFIN_HISTORY_CUTOFF=YYYY-MM-DD$/BGFIN_HISTORY_CUTOFF=2025-06-01/' "$settings"
 refuse 'Set each last4' "$ops_real/import.sh"
 [[ ! -s $TEST_ROOT/docker-calls ]]
-sed -i -e 's/XXXX/1234/g' -e 's/REPLACE_WITH_CHECKING_ACCOUNT/checking-id/' -e 's/REPLACE_WITH_CARD_ACCOUNT/card-id/' "$accounts"
+sed -i -e 's/XXXX/1234/g' -e 's/REPLACE_WITH_CHECKING_ACCOUNT/checking-id/' -e 's/REPLACE_WITH_CARD_ACCOUNT/checking-id/' "$accounts"
+refuse 'Use a different actualAccount' "$ops_real/import.sh"
+[[ ! -s $TEST_ROOT/docker-calls ]]
+sed -i '/chase-card/s/checking-id/card-id/' "$accounts"
 (
     cd "$TEST_ROOT"
     [[ $("$ops_real/import.sh") == 'files=1 duplicates=0 added=2 updated=0 skipped=0 stale=1' ]]

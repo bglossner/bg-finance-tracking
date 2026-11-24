@@ -4,7 +4,7 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
 
 case ${1-} in
-    --dry-run) fail 'Drop-folder intake has no dry-run mode. See Chase statements in README.md for single-file validation.' ;;
+    --dry-run) fail 'Drop-folder intake has no dry-run mode. See Real budget setup in README.md for single-file validation.' ;;
 esac
 [[ $# == 0 ]] || fail 'Usage: import.sh (set BGFIN_REAL_ROOT).'
 validate_real_root
@@ -39,10 +39,12 @@ done
 [[ ${settings[ACTUAL_SERVER_URL]-} == http://actual-server:5006 && ${settings[BGFIN_DOCKER_NETWORK]-} == "$network" ]] ||
     fail 'config/actual.env must point to the real Actual server and Docker network.'
 jq -es 'length == 1 and (.[0] | type == "object" and length > 0 and
-    all(.[]; type == "object" and (.last4 | type == "string" and test("^[0-9]{4}$"))))' \
+    all(.[]; type == "object" and (.last4 | type == "string" and length == 4 and test("^[0-9]{4}$"))))' \
     "$BGFIN_ACCOUNTS_FILE" >/dev/null 2>&1 || fail 'Set each last4 to four digits in a valid config/accounts.json.'
 jq -e 'all(.[]; .actualAccount | type == "string" and test("\\S") and (startswith("REPLACE_WITH_") | not))' \
     "$BGFIN_ACCOUNTS_FILE" >/dev/null 2>&1 || fail 'Set each actualAccount in config/accounts.json before importing.'
+jq -e '[.[].actualAccount] | length == (unique | length)' "$BGFIN_ACCOUNTS_FILE" >/dev/null 2>&1 ||
+    fail 'Use a different actualAccount for each alias in config/accounts.json.'
 
 find_server
 [[ -n $server_id ]] || fail 'Run setup.sh to start the real Actual server.'

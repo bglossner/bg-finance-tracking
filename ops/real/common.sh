@@ -58,9 +58,14 @@ inspect_server() {
     "${local_docker[@]}" container inspect --format "$1" "$server_id"
 }
 
+actual_mount_source() {
+    "${local_docker[@]}" container inspect --format \
+        '{{range .Mounts}}{{if and (eq .Destination "/data") (eq .Type "bind")}}{{.Source}}{{end}}{{end}}' "$1"
+}
+
 check_server_data() {
     local source
-    source=$(inspect_server '{{range .Mounts}}{{if and (eq .Destination "/data") (eq .Type "bind")}}{{.Source}}{{end}}{{end}}') ||
+    source=$(actual_mount_source "$server_id") ||
         fail 'Cannot inspect the real Actual server.'
     [[ $source == "$real_root/actual-data" ]] || fail 'The real Actual server belongs to a different data root.'
 }

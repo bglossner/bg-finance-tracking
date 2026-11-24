@@ -14,6 +14,24 @@ compose=("${local_docker[@]}" compose -p "$project" --env-file /dev/null
     -f "$repo/ops/docker/compose.yaml" -f "$ops_real/compose.override.yaml")
 "${compose[@]}" version >/dev/null || fail 'Install Docker Compose v2.24.4 or later.'
 
+# Check Docker mount metadata before touching a root that could belong to another stack.
+check_other_mounts() {
+    local ids container source canonical
+    ids=$("${local_docker[@]}" ps --all --quiet --no-trunc --filter volume=/data) ||
+        fail 'Cannot check existing Docker data mounts.'
+    while IFS= read -r container; do
+        [[ -n $container && $container != "$server_id" ]] || continue
+        source=$(actual_mount_source "$container") || fail 'Cannot check an existing Docker data mount.'
+        [[ -n $source ]] || continue
+        IFS= read -r -d '' canonical < <(realpath -mz -- "$source") || fail 'Cannot resolve an existing Docker data mount.'
+        if [[ $canonical == / || $real_root == "$canonical" || $real_root == "$canonical/"* || $canonical == "$real_root/"* ]]; then
+            fail "BGFIN_REAL_ROOT overlaps another container's data mount."
+        fi
+    done <<< "$ids"
+}
+
+find_server
+check_other_mounts
 mkdir -p -- "$real_root"
 private_dir "$real_root"
 # Serialize setup for this data root without introducing a lockfile.
@@ -22,12 +40,14 @@ flock -x 8
 
 find_server
 running=false
+health=
 if [[ -n $server_id ]]; then
     check_server_data
     bindings=$(inspect_server '{{json .HostConfig.PortBindings}}')
     jq -e --arg port "$port" '. == {"5006/tcp": [{HostIp: "127.0.0.1", HostPort: $port}]}' \
         <<< "$bindings" >/dev/null || fail 'The real Actual server already has a different port binding.'
     running=$(inspect_server '{{.State.Running}}')
+    health=$(inspect_server '{{if .State.Health}}{{.State.Health.Status}}{{end}}')
 fi
 if [[ $running == false ]]; then
     listeners=$(ss -H -ltn "sport = :$port") || fail 'Cannot check the local TCP port with ss.'
@@ -68,12 +88,12 @@ job_id=$("${local_docker[@]}" image ls --quiet --filter "reference=$job_image")
 if [[ -z $job_id ]]; then
     "${local_docker[@]}" build --tag "$job_image" --file "$repo/ops/docker/Dockerfile.job" "$repo" 8<&-
 fi
-if [[ $running == false ]]; then
+if [[ $running != true || $health != healthy ]]; then
     "${compose[@]}" up -d --wait --wait-timeout 75 --no-recreate --no-deps actual-server 8<&-
 else
     printf 'Kept the running Actual server.\n'
 fi
 
 printf '\nActual is available at 127.0.0.1:%s on the cloud desktop.\n' "$port"
-printf 'From the laptop, run: ssh -L %s:127.0.0.1:%s <cloud desktop host>\n' "$port" "$port"
+printf 'From the laptop, run: ssh -L 127.0.0.1:%s:127.0.0.1:%s <cloud desktop host>\n' "$port" "$port"
 printf 'Open http://localhost:%s and follow "Real budget setup (glossner)" in README.md.\n' "$port"

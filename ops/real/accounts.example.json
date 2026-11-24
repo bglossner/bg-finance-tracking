@@ -1,0 +1,4 @@
+{
+  "chase-checking": { "actualAccount": "REPLACE_WITH_CHECKING_ACCOUNT", "last4": "XXXX", "filename": "ChaseXXXX_Activity*.[qQ][fF][xX]" },
+  "chase-card": { "actualAccount": "REPLACE_WITH_CARD_ACCOUNT", "last4": "XXXX", "filename": "ChaseXXXX_Activity*.[qQ][fF][xX]" }
+}

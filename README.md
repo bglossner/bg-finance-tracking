@@ -206,3 +206,55 @@ for this job, glossner can opt out with `loginctl disable-linger glossner`.
 For bills, set recurring [Actual Budget schedules](https://actualbudget.org/docs/advanced/schedules/)
 and add a calendar reminder before each due date. Keep automatic posting for
 bills where it is wanted and test delivery with a calendar reminder.
+
+## Real budget setup (glossner)
+
+1. On the cloud desktop, run setup from the repository root. It requires
+   Docker Compose v2.24.4 or later, `ss`, and `jq`.
+
+   ```sh
+   export BGFIN_REAL_ROOT="$HOME/.local/share/bg-finance-tracking/real"
+   ops/real/setup.sh
+   ```
+
+   Use an absolute root outside Git checkouts and `/tmp`. The setup keeps
+   existing private config files and uses `bgfin-job:real` for QFX-only intake.
+   Port 5007 is the default. Set `BGFIN_REAL_PORT` before setup to use another
+   port and substitute it in the SSH forward and browser URL.
+2. On the laptop, run `ssh -L 5007:127.0.0.1:5007 <cloud desktop host>` and open
+   [Actual Budget](http://localhost:5007).
+3. Set the server password and create the budget.
+4. Create the Chase checking and credit card accounts. Enter their balances
+   immediately before the first date covered by the QFX imports as opening
+   balances.
+5. Copy the budget Sync ID from **Settings > Advanced** and enter it and the
+   server password in `$BGFIN_REAL_ROOT/config/actual.env`. Set
+   `BGFIN_HISTORY_CUTOFF` to the first export date in `YYYY-MM-DD` format.
+   Enter values literally after `=`, including any special characters. For
+   an encrypted budget, also set `ACTUAL_E2E_PASSWORD`.
+6. Fill in `last4` and `actualAccount` for both aliases in
+   `$BGFIN_REAL_ROOT/config/accounts.json`. Prefer the ID from each Actual
+   account URL. Replace `XXXX` in each filename glob with that account's
+   suffix to match Chase's standard QFX basenames.
+7. In each Chase account's **Activity** page, download QFX starting at the
+   history cutoff, inclusive. Drop the files into `$BGFIN_REAL_ROOT/intake/inbox/`.
+   For `scp`, upload with a `.part` suffix and rename to `.qfx` when the copy
+   finishes. Wait at least 10 seconds after the last write before importing.
+8. The drop-folder importer has no `--dry-run`. To preview an individual
+   file, use the single-file `--dry-run` command in [Chase statements](#chase-statements)
+   with the real inbox and account mapping mounted read-only. When ready,
+   run `ops/real/import.sh` on the cloud desktop. `ops/real/status.sh` reports
+   the server and counts regular files in the inbox and quarantine, including
+   quarantine reason files.
+9. Compare each Actual account balance against Chase for the same date.
+10. Optionally copy the [scheduling units](ops/schedule) as
+    `bgfin-real-import.service` and `bgfin-real-import.timer`. In the copied
+    service, use `ExecStart=/bin/bash -p /absolute/checkout/ops/real/import.sh`
+    and replace both existing `Environment` lines with
+    `Environment=BGFIN_REAL_ROOT=%h/.local/share/bg-finance-tracking/real`.
+    Follow the [scheduling instructions](#scheduling) with the new unit names.
+
+Keep the real directory, Actual browser session, and credentials out of agent
+sessions. Owner-only modes still allow programs running as glossner to read
+this data. Share only aggregate counts or redacted errors with agents. See
+[teardown and backups](ops/real/teardown.md).

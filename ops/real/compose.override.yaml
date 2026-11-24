@@ -1,0 +1,9 @@
+services:
+  actual-server:
+    ports: !override
+      - target: 5006
+        published: "${BGFIN_REAL_PORT:-5007}"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    user: "${BGFIN_REAL_UID:?Set the host UID}:${BGFIN_REAL_GID:?Set the host GID}"
+    command: ["/bin/sh", "-c", "umask 077; exec node app.js"]

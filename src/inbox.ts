@@ -21,6 +21,7 @@ interface Options {
   budgetIdentity: string;
   minimumAgeSeconds: number;
   staleDays: number;
+  acceptedExtensions?: readonly string[];
   now?: Date;
   report: (message: string) => void;
   warn: (message: string) => void;
@@ -191,7 +192,7 @@ async function prepare(candidate: Candidate, options: Options, blocked: Set<stri
   if (candidate.info.isSymbolicLink()) return 'Symbolic links are not accepted.';
   if (!candidate.info.isFile() || candidate.info.nlink !== 1) return 'Expected a standalone regular file.';
   const extension = extname(candidate.path).toLowerCase();
-  if (!['.qfx', '.ofx', '.csv'].includes(extension)) return 'Unsupported file extension.';
+  if (!(options.acceptedExtensions ?? ['.qfx', '.ofx', '.csv']).includes(extension)) return 'Unsupported file extension.';
   let contents: Buffer;
   try {
     const copy = await snapshot(candidate);

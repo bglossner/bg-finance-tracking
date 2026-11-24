@@ -80,6 +80,16 @@ test('ignores temporary and recent files and quarantines junk and links without 
   assert.deepEqual(env.calls, []);
 });
 
+test('QFX-only intake accepts uppercase QFX and quarantines other formats before parsing', async t => {
+  const env = await setup(t);
+  await env.drop('checking-synthetic.QFX', await fixture('checking-synthetic.qfx'));
+  await env.drop('card-synthetic.ofx', await fixture('card-synthetic.qfx'));
+  await env.drop('card-synthetic.csv', 'synthetic csv');
+  assert.equal(await runInbox({ ...env.options, acceptedExtensions: ['.qfx'] }), true);
+  assert.deepEqual(env.calls, ['Synthetic Checking']);
+  assert.deepEqual(await env.reasons(), ['Unsupported file extension.\n', 'Unsupported file extension.\n']);
+});
+
 test('imports chronological jobs and archives exact duplicate hashes without resending', async t => {
   const env = await setup(t);
   const initial = await fixture('checking-synthetic.qfx');

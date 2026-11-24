@@ -46,6 +46,7 @@ async function main() {
   try {
     const complete = await runInbox({
       dataRoot, repository, cutoff, routes, report, warn, budgetIdentity,
+      acceptedExtensions: process.argv.includes('--qfx-only') ? ['.qfx'] : undefined,
       minimumAgeSeconds: integerSetting('BGFIN_MIN_FILE_AGE_SECONDS', 10),
       staleDays: integerSetting('BGFIN_STALE_DAYS', 10),
       async importRows(account, rows) {

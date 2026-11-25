@@ -23,6 +23,7 @@ from urllib.parse import parse_qsl, unquote, unquote_plus, urlsplit
 from xml.parsers import expat
 
 
+VERSION = '1.1.0'
 BANK_DOMAINS = ('chase.com', 'jpmorgan.com', 'jpmorganchase.com', 'jpmchase.com')
 METHODS = frozenset('GET HEAD POST PUT DELETE CONNECT OPTIONS TRACE PATCH PROPFIND '
                     'PROPPATCH MKCOL COPY MOVE LOCK UNLOCK REPORT SEARCH'.split())
@@ -104,6 +105,17 @@ HTML_ROUTE_ATTRIBUTES = {'href': frozenset('a area base image link use'.split())
                          'xlink:href': frozenset('a image use'.split())}
 REQUEST_ORIGIN_HEADERS = frozenset({'origin', 'referer'})
 RESPONSE_ORIGIN_HEADERS = frozenset({'access-control-allow-origin', 'location', 'timing-allow-origin'})
+RAW_ENTRY_KINDS = {
+    ('request', 'url'): 'url',
+    ('request', 'queryString', '*', 'value'): 'query-value',
+    ('request', 'postData', 'params', '*', 'value'): 'form-value',
+    ('request', 'postData', 'text'): 'body-text',
+    ('response', 'content', 'text'): 'body-text',
+}
+for _side in ('request', 'response'):
+    RAW_ENTRY_KINDS[(_side, 'headers', '*', 'value')] = 'header-value'
+    for _field in ('name', 'value'):
+        RAW_ENTRY_KINDS[(_side, 'cookies', '*', _field)] = 'cookie'
 
 
 class InvalidInput(ValueError):
@@ -134,26 +146,62 @@ def sensitive_scalars(value):
     return (text for text in scalars(value) if len(text) >= 8 or DIGITS.search(text))
 
 
+def raw_values(value, path=()):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from raw_values(child, (*path, key))
+    elif isinstance(value, list):
+        for child in value:
+            yield from raw_values(child, (*path, '*'))
+    else:
+        kind = RAW_ENTRY_KINDS.get(path[3:], 'har-metadata') if path[:3] == ('log', 'entries', '*') else 'har-metadata'
+        for text in sensitive_scalars(value):
+            yield text, kind
+
+
 class InputValues:
     """Track raw data and values extracted by the format-specific parsers."""
 
-    def __init__(self, document):
-        self.raw = Counter(sensitive_scalars(document))
+    def __init__(self, document, *, diagnose=False):
         self.values = set()
         self.short_secrets = set()
-
-    def remember(self, value):
-        self.values.update(sensitive_scalars(value))
-
-    def structural_occurrence(self, value):
-        """Exclude one raw occurrence, preserving copies from other sources."""
-        self.raw.subtract(sensitive_scalars(value))
-
-    def remember_secret(self, value):
-        if 0 < len(value) < 8:
-            self.short_secrets.add(value.casefold())
+        self.raw_kinds = defaultdict(Counter) if diagnose else None
+        self.parsed_kinds = defaultdict(set) if diagnose else None
+        if diagnose:
+            self.raw = Counter()
+            for value, kind in raw_values(document):
+                self.raw[value] += 1
+                self.raw_kinds[kind][value] += 1
         else:
-            self.remember(value)
+            self.raw = Counter(sensitive_scalars(document))
+
+    def remember(self, value, kind):
+        for text in sensitive_scalars(value):
+            self.values.add(text)
+            if self.parsed_kinds is not None:
+                self.parsed_kinds[kind].add(text)
+
+    def structural_occurrence(self, value, kind='har-metadata'):
+        """Exclude one raw occurrence, preserving copies from other sources."""
+        for text in sensitive_scalars(value):
+            self.raw[text] -= 1
+            if self.raw_kinds is not None:
+                self.raw_kinds[kind][text] -= 1
+
+    def remember_secret(self, value, kind):
+        if 0 < len(value) < 8:
+            text = value.casefold()
+            self.short_secrets.add(text)
+            if self.parsed_kinds is not None:
+                self.parsed_kinds[kind].add(text)
+        else:
+            self.remember(value, kind)
+
+    def source_kinds(self, value):
+        kinds = {kind for kind, values in self.parsed_kinds.items() if value in values}
+        if self.raw[value] > 0:
+            kinds.update(kind for kind, values in self.raw_kinds.items() if values[value] > 0)
+        return kinds or {'har-metadata'}
 
     def forbidden_prefixes(self):
         prefixes = defaultdict(list)
@@ -276,12 +324,12 @@ def encoded_pairs(text, sources, *, from_post=False):
         raise InvalidInput
     pairs = parse_qsl(text, keep_blank_values=True, errors='strict')
     for _, value in pairs:
-        sources.remember(value)
+        sources.remember(value, 'form-value' if from_post else 'query-value')
     if '=' in text or '&' in text:
-        sources.remember([text, unquote_plus(text, errors='strict')])
+        sources.remember([text, unquote_plus(text, errors='strict')], 'form-text' if from_post else 'query-string')
     elif from_post:
         # A bare form parameter contains only a name.
-        sources.structural_occurrence(text)
+        sources.structural_occurrence(text, 'body-text')
     return pairs
 
 
@@ -330,14 +378,14 @@ def url_shape(raw, include_host, sources):
     _ = url.port
     authority = f'{url.scheme}://{host}'
     allowed = bank_host(host) or (include_host and include_host.fullmatch(host))
-    sources.structural_occurrence(raw)
+    sources.structural_occurrence(raw, 'url')
     if not allowed:
-        sources.remember(host)
+        sources.remember(host, 'url')
     for value in (url.username, url.password):
         if value:
-            sources.remember_secret(unquote(value, errors='strict'))
+            sources.remember_secret(unquote(value, errors='strict'), 'url')
     if url.fragment:
-        sources.remember(unquote(url.fragment, errors='strict'))
+        sources.remember(unquote(url.fragment, errors='strict'), 'url')
     path = []
     for segment in (url.path or '/').split('/'):
         if re.search(r'%(?![0-9a-fA-F]{2})', segment):
@@ -346,7 +394,7 @@ def url_shape(raw, include_host, sources):
         if not decoded or re.fullmatch(r'[A-Za-z]{1,11}', decoded):
             path.append(decoded)
         else:
-            sources.remember([segment, decoded])
+            sources.remember([segment, decoded], 'url')
             is_id = re.search(r'\d{3,}', decoded) or UUID.fullmatch(decoded) or has_email(decoded)
             path.append('<id>' if is_id else '<token>')
     target = url.path or '/'
@@ -360,8 +408,8 @@ def remember_cookie(value, sources):
     name, sep, content = value.strip().partition('=')
     if not sep or not name.strip():
         return 0
-    sources.remember_secret(name.strip())
-    sources.remember_secret(content.strip().strip('"'))
+    sources.remember_secret(name.strip(), 'cookie')
+    sources.remember_secret(content.strip().strip('"'), 'cookie')
     return 1
 
 
@@ -371,12 +419,12 @@ def mime_header(value, header, sources):
     message = Message(policy=policy.compat32)
     message[header] = value
     for _, parameter in message.get_params(header=header, failobj=[])[1:]:
-        sources.remember(collapse_rfc2231_value(parameter, errors='strict'))
+        sources.remember(collapse_rfc2231_value(parameter, errors='strict'), 'mime-parameter')
     # The email parser cannot distinguish bare fragments from explicit empty values.
     for match in MIME_PARAMETER.finditer(value):
         fragment = match[1]
         if '=' not in fragment:
-            remember_text(fragment, sources)
+            remember_text(fragment, sources, kind='mime-parameter')
     return message
 
 
@@ -393,30 +441,30 @@ def header_shape(side, sources, *, response=False, authority='', target=''):
         sources.structural_occurrence(original)
         # Check the original spelling before lowercasing can hide token-like casing.
         if blob_like(original, 'headers'):
-            sources.remember(original)
+            sources.remember(original, 'header-name')
         if (name == 'content-type' and mime_type(value)) or (
                 not response and name == 'accept' and accept_type(value)):
-            sources.structural_occurrence(value)
+            sources.structural_occurrence(value, 'header-value')
             if name == 'content-type' and ';' in value:
                 mime_header(value, 'Content-Type', sources)
         elif name in ('authorization', 'proxy-authorization'):
             credentials = value.split(maxsplit=1)
             if len(credentials) == 2:
-                sources.remember_secret(credentials[1].strip())
+                sources.remember_secret(credentials[1].strip(), 'header-value')
         if name in origin_headers and bank_origin(value):
-            sources.structural_occurrence(value)
+            sources.structural_occurrence(value, 'header-value')
         elif not response and authority and (
                 (name in ('host', ':authority') and value.lower() == authority.split('://')[1])
                 or (name in ('origin', 'referer') and value.lower() == authority)
                 or (name == ':path' and value == target)):
-            sources.structural_occurrence(value)
+            sources.structural_occurrence(value, 'header-value')
         if name != ('set-cookie' if response else 'cookie'):
             names.add(name)
     cookies = require(side.get('cookies', []), list)
     for cookie in cookies:
         cookie = require(cookie, dict)
-        sources.remember_secret(require(cookie['name'], str))
-        sources.remember_secret(require(cookie['value'], str))
+        sources.remember_secret(require(cookie['name'], str), 'cookie')
+        sources.remember_secret(require(cookie['value'], str), 'cookie')
     cookie_count = len(cookies)
     if response and 'set-cookie' in values:
         cookie_count = sum(remember_cookie(line.partition(';')[0], sources)
@@ -432,7 +480,7 @@ def first_header(values, name):
 
 
 def remember_multipart_payload(part, sources):
-    sources.remember(part.get_filename())
+    sources.remember(part.get_filename(), 'mime-parameter')
     if part.is_multipart():
         for child in part.iter_parts():
             remember_multipart_payload(child, sources)
@@ -440,7 +488,7 @@ def remember_multipart_payload(part, sources):
         payload = part.get_payload(decode=True)
         if payload:
             if is_json_mime(part.get_content_type()) and payload.strip():
-                sources.remember(parse_json(payload))
+                sources.remember(parse_json(payload), 'json-scalar')
             else:
                 remember_opaque_text(payload.decode('utf-8', errors='replace'), sources)
     if part.defects:
@@ -501,7 +549,7 @@ def parsed_json_shape(text, sources):
     if not text:
         return '<omitted>'
     data = parse_json(text)
-    sources.remember(data)
+    sources.remember(data, 'json-scalar')
     return json_shape(data)
 
 
@@ -520,30 +568,30 @@ def web_structure(text, match, literal, sources, web_mime):
     return PATH.fullmatch(literal) is not None and JS_ROUTE_START.search(before) is not None
 
 
-def remember_tokens(text, sources):
+def remember_tokens(text, sources, kind):
     for match in TOKEN.finditer(text):
-        sources.remember(match[0])
+        sources.remember(match[0], kind)
 
 
-def remember_text(text, sources, *, web_mime=None):
-    sources.remember(text)
-    sources.remember(text.splitlines())
+def remember_text(text, sources, *, web_mime=None, kind='body-token'):
+    sources.remember(text, kind)
+    sources.remember(text.splitlines(), kind)
     if web_mime is None:
-        remember_tokens(text, sources)
+        remember_tokens(text, sources, kind)
         return
     end = 0
     for match in WEB_LITERAL.finditer(text):
-        remember_tokens(text[end:match.start()], sources)
+        remember_tokens(text[end:match.start()], sources, kind)
         quoted = match['quoted']
         if quoted:
             literal = quoted[1:-1]
             if not web_structure(text, match, literal, sources, web_mime):
-                sources.remember(literal)
-                remember_tokens(literal, sources)
+                sources.remember(literal, kind)
+                remember_tokens(literal, sources, kind)
         else:
-            remember_tokens(match[0], sources)
+            remember_tokens(match[0], sources, kind)
         end = match.end()
-    remember_tokens(text[end:], sources)
+    remember_tokens(text[end:], sources, kind)
 
 
 def remember_opaque_text(text, sources, *, web_mime=None):
@@ -553,7 +601,7 @@ def remember_opaque_text(text, sources, *, web_mime=None):
         except ValueError:
             pass
         else:
-            sources.remember(data)
+            sources.remember(data, 'json-scalar')
             return
     remember_text(text, sources, web_mime=web_mime)
 
@@ -595,7 +643,7 @@ class HtmlValues(HTMLParser):
                 data = CDATA_TEXT.sub(r'\1', data)
         if self.code_mime is not None and is_json_mime(self.code_mime):
             if data.strip():
-                self.sources.remember(parse_json(data))
+                self.sources.remember(parse_json(data), 'json-scalar')
         else:
             remember_text(data, self.sources, web_mime=self.code_mime or None)
 
@@ -625,7 +673,7 @@ def xml_tags(text, sources):
     def start_tag(name, attrs):
         tags[name] = None
         for value in attrs.values():
-            sources.remember(value)
+            sources.remember(value, 'body-token')
 
     def reject_doctype(*_args):
         raise InvalidInput
@@ -793,22 +841,115 @@ def make_skeleton(document, include_host, sources):
                                                for path, count in sorted(counts.items())]}
 
 
-def self_check(output, sources):
-    forbidden = sources.forbidden_prefixes()
-    offenders = []
+def field_kind(field, location):
+    if field == 'headers':
+        return 'request.header-name' if '.request.headers[' in location else 'response.header-name'
+    if field == 'name':
+        if '.query[' in location:
+            return 'query-name'
+        return 'json-key' if '.fields[' in location else 'form-name'
+    if field == 'path':
+        return 'path_counts.path' if location.startswith('$.path_counts[') else 'path'
+    if field in ('mime', 'accept', 'content_type'):
+        return 'mime'
+    if field in SAFE_BUCKETS or field == 'type':
+        return 'placeholder'
+    return field if field in ('body', 'origin', 'disposition', 'method') else 'other'
 
-    def scan(value, location, field):
+
+SHAPE_BOUNDS = (4, 8, 16, 32, 64, 128, 256, 1024)
+CHARACTER_CLASSES = (
+    ('lower', re.compile(r'[a-z]')),
+    ('upper', re.compile(r'[A-Z]')),
+    ('digit', re.compile(r'[0-9]')),
+    ('hyphen', re.compile(r'-')),
+    ('underscore', re.compile(r'_')),
+    ('dot', re.compile(r'\.')),
+    ('slash', re.compile(r'/')),
+    ('space', re.compile(r' ')),
+    ('control', re.compile(r'[\x00-\x1f\x7f]')),
+    ('symbol', re.compile(r'[\x21-\x2c\x3a-\x40\x5b-\x5e\x60\x7b-\x7e]')),
+)
+
+
+def describe_shape(value):
+    if not isinstance(value, str):
+        return {'length_bucket': None, 'classes': ['non-string']}
+    low = 0
+    for high in SHAPE_BOUNDS:
+        if len(value) <= high:
+            length_bucket = f'{low}-{high}'
+            break
+        low = high + 1
+    else:
+        length_bucket = f'{low}+'
+    classes = [label for label, pattern in CHARACTER_CLASSES if pattern.search(value)]
+    if not value.isascii():
+        classes.append('non-ascii')
+    return {'length_bucket': length_bucket, 'classes': classes}
+
+
+class Diagnostics:
+    def __init__(self):
+        self.buckets = {}
+
+    def record(self, rule, kind, location, value, source_kinds):
+        key = rule, kind
+        if key not in self.buckets:
+            self.buckets[key] = {'rule': rule, 'field_kind': kind, 'count': 0, 'examples': []}
+            if rule == 'copied-input-value':
+                self.buckets[key]['source_kinds'] = Counter()
+        bucket = self.buckets[key]
+        bucket['count'] += 1
+        if source_kinds:
+            bucket['source_kinds'].update(source_kinds)
+        if len(bucket['examples']) < 5:
+            bucket['examples'].append({'field_path': location, 'shape': describe_shape(value)})
+
+    def render(self, entry_count, offender_count):
+        return json.dumps({
+            'tool_version': VERSION,
+            'python_version': '.'.join(map(str, sys.version_info[:3])),
+            'status': 'complete' if offender_count is not None else 'processing-failed',
+            'entry_count': entry_count,
+            'offender_count': offender_count,
+            'buckets': [self.buckets[key] for key in sorted(self.buckets)],
+        }, indent=2, sort_keys=True) + '\n'
+
+
+def self_check(output, sources, diagnostics=None):
+    forbidden = sources.forbidden_prefixes()
+    offenders = set()
+
+    def record(rule, location, field, value, kinds=(), kind_hint=None):
+        offenders.add(location)
+        if diagnostics is not None:
+            diagnostics.record(rule, kind_hint or field_kind(field, location), location, value, kinds)
+
+    def check(value, location, field, *, valid=True, scanned=None, kind_hint=None):
+        if not valid:
+            record('invalid-structure', location, field, value, kind_hint=kind_hint)
+            if diagnostics is None:
+                return
+        for rule, kinds in matched_rules(value if scanned is None else scanned, field):
+            record(rule, location, field, value, kinds, kind_hint)
+            if diagnostics is None:
+                break
+
+    def scan(value, location, field, kind_hint=None):
         if isinstance(value, dict):
             for index, (key, child) in enumerate(value.items()):
                 if key in FIXED_FIELDS:
                     scan(child, f'{location}.{key}', key)
                 else:
-                    if suspect(key):
-                        offenders.append(f'{location}.key[{index}]')
+                    check(key, f'{location}.key[{index}]', '', kind_hint='object-key')
                     scan(child, f'{location}.value[{index}]', '')
         elif isinstance(value, list):
+            if (diagnostics is not None and location.endswith('.response.body')
+                    and value and isinstance(value[0], str)):
+                kind_hint = 'ofx-tag' if value[0].upper() == 'OFX' else 'xml-tag'
             for index, item in enumerate(value):
-                scan(item, f'{location}[{index}]', field)
+                scan(item, f'{location}[{index}]', field, kind_hint)
         elif isinstance(value, str):
             if value in GENERATED_STRINGS.get(field, ()):
                 return
@@ -818,40 +959,56 @@ def self_check(output, sources):
                     if mime == 'unknown':
                         return
                     if MIME.fullmatch(mime):
-                        if suspect(mime, 'mime'):
-                            offenders.append(location)
+                        check(value, location, 'mime', scanned=mime, kind_hint='placeholder')
                         return
+            scanned = value
             valid = field not in ('name', 'headers') or name_ok(value, field)
             if field == 'path':
                 valid = bool(PATH.fullmatch(value))
             elif field == 'disposition' and (match := DISPOSITION.fullmatch(value)):
-                value = match[1]
-            if not valid or suspect(value, field):
-                offenders.append(location)
+                scanned = match[1]
+            check(value, location, field, valid=valid, scanned=scanned, kind_hint=kind_hint)
         elif type(value) is not int or not NUMERIC_LOCATIONS.fullmatch(location):
-            offenders.append(location)
+            record('invalid-structure', location, field, value, kind_hint=kind_hint)
 
-    def suspect(value, field=''):
-        lowered = value.casefold()
+    def matched_rules(value, field):
         if not value.isascii() or re.search(r'[\x00-\x1f\x7f]', value):
-            return True
-        if has_email(value) or any(pattern.search(value) for pattern in (DIGITS, DATE, TEXT_DATE, MONEY, JWT)):
-            return True
+            yield 'non-ascii-or-control', ()
+        if has_email(value):
+            yield 'email', ()
+        for rule, pattern in (('digit-run', DIGITS), ('amount', MONEY), ('jwt', JWT)):
+            if pattern.search(value):
+                yield rule, ()
+        if DATE.search(value) or TEXT_DATE.search(value):
+            yield 'date', ()
         if blob_like(value, field):
-            return True
-        if sources.short_secrets and copied_short_secret(lowered, field, sources.short_secrets):
-            return True
+            yield 'base64-like', ()
+        matches = copied_values(value, field)
+        if diagnostics is None:
+            if next(matches, None) is not None:
+                yield 'copied-input-value', ()
+        else:
+            kinds = set()
+            for source in set(matches):
+                kinds.update(sources.source_kinds(source))
+            if kinds:
+                yield 'copied-input-value', kinds
+
+    def copied_values(value, field):
+        lowered = value.casefold()
+        if sources.short_secrets:
+            yield from matching_short_secrets(lowered, field, sources.short_secrets)
         allowed_copies = ('/<token>',) if field == 'path' else ()
-        return any(lowered.startswith(source, index)
-                   for index in range(len(lowered) - 3)
-                   for source in forbidden.get(lowered[index:index + 4], ())
-                   if source not in allowed_copies)
+        for index in range(len(lowered) - 3):
+            for source in forbidden.get(lowered[index:index + 4], ()):
+                if source not in allowed_copies and lowered.startswith(source, index):
+                    yield source
 
     scan(output, '$', '')
-    return sorted(set(offenders))
+    return sorted(offenders)
 
 
-def copied_short_secret(value, field, secrets):
+def matching_short_secrets(value, field, secrets):
     if field == 'path':
         atoms = [part for part in value.split('/') if part not in ('<id>', '<token>')]
     elif field == 'origin':
@@ -865,8 +1022,8 @@ def copied_short_secret(value, field, secrets):
     elif field in ('name', 'headers', 'body'):
         atoms = [value]
     else:
-        return False
-    return not secrets.isdisjoint(atoms)
+        return set()
+    return secrets.intersection(atoms)
 
 
 def name_word(part):
@@ -937,28 +1094,40 @@ def main():
     parser.add_argument('-o', metavar='out.json', type=Path, help='write to a private file instead of stdout')
     parser.add_argument('--include-host-pattern', metavar='REGEX', help='retain normalized hosts matching the full regex')
     parser.add_argument('--force', action='store_true', help='replace an existing output file')
+    parser.add_argument('--diagnose', action='store_true',
+                        help='print a position-only diagnostic report and exit nonzero')
     try:
         args = parser.parse_args()
-        if args.force and args.o is None:
+        if (args.force and args.o is None) or (args.diagnose and args.o is not None):
             raise InvalidArguments
         include_host = re.compile(args.include_host_pattern, re.ASCII) if args.include_host_pattern else None
     except (InvalidArguments, re.error, OverflowError, RecursionError):
         print('Invalid arguments. See --help.', file=sys.stderr)
         return 2
+    diagnostics = Diagnostics() if args.diagnose else None
+    entry_count = None
     try:
         document = parse_json(args.input.read_text(encoding='utf-8-sig'))
-        sources = InputValues(document)
+        if args.diagnose:
+            log = require(require(document, dict)['log'], dict)
+            entry_count = len(require(log['entries'], list))
+        sources = InputValues(document, diagnose=args.diagnose)
         outline = make_skeleton(document, include_host, sources)
-        offenders = self_check(outline, sources)
-        if offenders:
+        offenders = self_check(outline, sources, diagnostics)
+        if args.diagnose:
+            payload = diagnostics.render(entry_count, len(offenders))
+        elif offenders:
             print('\n'.join(offenders), file=sys.stderr)
             return 1
-        payload = json.dumps(outline, indent=2, ensure_ascii=True) + '\n'
+        else:
+            payload = json.dumps(outline, indent=2, ensure_ascii=True) + '\n'
     except (Exception, KeyboardInterrupt):
-        print('Could not read or process the HAR.', file=sys.stderr)
-        return 1
+        if not args.diagnose:
+            print('Could not read or process the HAR.', file=sys.stderr)
+            return 1
+        payload = Diagnostics().render(entry_count, None)
     try:
-        if args.o is None:
+        if args.diagnose or args.o is None:
             sys.stdout.write(payload)
             sys.stdout.flush()
         else:
@@ -971,7 +1140,7 @@ def main():
     except (Exception, KeyboardInterrupt):
         print('Could not write the skeleton.', file=sys.stderr)
         return 1
-    return 0
+    return 1 if args.diagnose else 0
 
 
 if __name__ == '__main__':

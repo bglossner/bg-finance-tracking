@@ -230,6 +230,124 @@ class HarSkeletonTests(unittest.TestCase):
         self.assertIn('BANKACCTFROM', download['response']['body'])
         self.assertIn('STMTTRN', download['response']['body'])
 
+    def diagnose(self, **kwargs):
+        result = self.run_tool('--diagnose', **kwargs)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, '')
+        return result.stdout, json.loads(result.stdout)
+
+    def test_diagnose_clean_banking_capture_only_reports_metadata(self):
+        self.har = synthetic_banking_har()
+        stdout, report = self.diagnose()
+        self.assertRegex(report['tool_version'], r'^\d+\.\d+\.\d+$')
+        self.assertEqual(report['python_version'], '.'.join(map(str, sys.version_info[:3])))
+        self.assertEqual(report['status'], 'complete')
+        self.assertEqual(report['entry_count'], 72)
+        self.assertEqual(report['offender_count'], 0)
+        self.assertEqual(report['buckets'], [])
+        for text in (ACCOUNT, EMAIL, JWT, COOKIE, DEVICE, FILE_NAME, TXN_LABEL, *DATES,
+                     'secure.chase.com', 'browser-telemetry.example.test', 'recentitems',
+                     'includeAccountDetails', 'X-JPMC-CSRF-Token', 'pretendCrossSiteCredential',
+                     'Fake account label', 'statementDownloadFormat', 'BANKACCTFROM',
+                     'application/vnd.intu.qfx'):
+            self.assertNotIn(text.casefold(), stdout.casefold())
+
+    def test_diagnose_reports_rule_field_and_source_counts_with_bounded_examples(self):
+        marker = 'privateMarker'
+        origin = 'https://portal.jpmorgan.com'
+        mime = 'application/privatehint'
+        sources = entry(f'https://secure.chase.com/collect?selection=private%4Darker#{marker}',
+                        request_headers=[header('X-Source', marker), header('X-Route', 'safemarker'),
+                                         header('X-Origin-Value', origin), header('X-Mime-Value', mime)],
+                        text=json.dumps({'capturedValue': marker}),
+                        post={'mimeType': 'application/x-www-form-urlencoded',
+                              'text': 'selection=private%4Darker'})
+        sources['request']['cookies'] = [header('shortfake', marker)]
+        opaque = entry('https://browser.example.test/resource', mime='text/plain',
+                       text=f'hello {marker} done')
+        target = entry(f'https://secure.chase.com/api/safemarker?{marker}',
+                       request_headers=[header(EMAIL, 'redact everything')],
+                       response_headers=[header(marker, 'redact entirely')],
+                       text=json.dumps({f'{marker}Copy': True, 'account0742': None,
+                                        DATES[0]: True, JWT: True}))
+        download = entry('https://secure.chase.com/download', mime='application/qfx',
+                         text='<OFX><TRN22.50>synthetic</TRN22.50></OFX>')
+        self.har['log']['entries'] = ([copy.deepcopy(target) for _ in range(7)]
+                                      + [sources, opaque, entry(f'{origin}/api', mime=mime), download])
+        stdout, report = self.diagnose()
+        normal = self.run_tool()
+        self.assertEqual(normal.returncode, 1)
+        self.assertEqual(report['entry_count'], 11)
+        self.assertEqual(report['offender_count'], len(normal.stderr.splitlines()))
+        buckets = {(row['rule'], row['field_kind']): row for row in report['buckets']}
+        copied = buckets['copied-input-value', 'json-key']
+        self.assertEqual(copied['count'], 7)
+        self.assertEqual(copied['source_kinds'], dict.fromkeys(
+            ('body-token', 'cookie', 'form-value', 'header-value', 'json-scalar', 'query-value', 'url'), 7))
+        self.assertEqual(copied['examples'], [
+            {'field_path': f'$.entries[{i}].response.body.fields[3].name',
+             'shape': {'length_bucket': '17-32', 'classes': ['lower', 'upper']}}
+            for i in range(5)
+        ])
+        for kind, count in (('query-name', 7), ('response.header-name', 7), ('path', 7),
+                            ('path_counts.path', 1), ('origin', 1), ('mime', 1)):
+            self.assertEqual(buckets['copied-input-value', kind]['count'], count)
+        self.assertEqual(buckets['email', 'request.header-name']['count'], 7)
+        self.assertEqual(buckets['digit-run', 'json-key']['count'], 14)
+        self.assertEqual(buckets['date', 'json-key']['count'], 7)
+        self.assertEqual(buckets['amount', 'ofx-tag']['count'], 1)
+        self.assertEqual(buckets['jwt', 'json-key']['count'], 7)
+        self.assertIn(('base64-like', 'json-key'), buckets)
+        self.assertLessEqual(max(map(lambda row: len(row['examples']), report['buckets'])), 5)
+        for text in (marker, 'privateMark', 'arkerCopy', origin, mime, 'safemarker', EMAIL,
+                     JWT, 'account0742', '0742', DATES[0], '22.50', 'TRN22', 'shortfake',
+                     'private%4Darker', 'redact everything', 'redact entirely', 'capturedValue'):
+            self.assertNotIn(text.casefold(), stdout.casefold())
+
+    def test_diagnose_keeps_distinct_values_of_the_same_shape_indistinguishable(self):
+        reports = []
+        for name in ('privateMarker', 'anotherSecret'):
+            first = entry('https://secure.chase.com/api', text=json.dumps({f'{name}Copy': True}),
+                          request_headers=[header('X-Value', name)])
+            self.har['log']['entries'] = [first]
+            stdout, _ = self.diagnose()
+            self.assertNotIn(name.casefold(), stdout.casefold())
+            reports.append(stdout)
+        self.assertEqual(*reports)
+
+    def test_diagnose_attributes_a_copy_to_data_and_excludes_the_structural_mirror(self):
+        origin = 'https://secure.chase.com'
+        self.har['log']['entries'] = [
+            entry(f'{origin}/api', request_headers=[header('Cookie', f'syntheticSession={origin}')],
+                  response_headers=[header('Access-Control-Allow-Origin', origin)]),
+        ]
+        stdout, report = self.diagnose()
+        self.assertNotIn(origin, stdout)
+        self.assertEqual(report['offender_count'], 1)
+        copied, = report['buckets']
+        self.assertEqual((copied['rule'], copied['field_kind']), ('copied-input-value', 'origin'))
+        self.assertEqual(copied['source_kinds'], {'cookie': 1})
+
+    def test_diagnose_processing_failure_and_output_flags_are_safe(self):
+        stdout, bad_json = self.diagnose(raw=f'{{"malformed":"{JWT}"')
+        self.assertNotIn(JWT, stdout)
+        self.assertIsNone(bad_json['entry_count'])
+        self.assertEqual(bad_json['status'], 'processing-failed')
+        self.assertIsNone(bad_json['offender_count'])
+        self.assertEqual(bad_json['buckets'], [])
+        self.har['log']['entries'][0]['request']['url'] = f'invalid {JWT}'
+        stdout, bad_entry = self.diagnose()
+        self.assertNotIn(JWT, stdout)
+        self.assertEqual(bad_entry['entry_count'], 3)
+        self.assertEqual(bad_entry['status'], 'processing-failed')
+        self.destination.write_text('sentinel', encoding='utf-8')
+        for args in (('-o', self.destination), ('-o', self.destination, '--force'), ('--force',)):
+            result = self.run_tool('--diagnose', *args)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(result.stdout, '')
+            self.assertEqual(result.stderr, 'Invalid arguments. See --help.\n')
+            self.assertEqual(self.destination.read_text(encoding='utf-8'), 'sentinel')
+
     def test_third_party_and_explicit_hostname_pattern(self):
         self.har['log']['entries'] += [entry('https://secure.chase.com.example.test/help'),
                                        entry('https://api.jpmorganchase.com/help')]

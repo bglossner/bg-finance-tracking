@@ -1,6 +1,6 @@
 # Chase HAR skeleton
 
-The HAR skeleton describes the requests involved in downloading a QFX file. Work with glossner's own capture locally. Share only the reviewed JSON skeleton.
+The HAR skeleton describes the requests involved in downloading a QFX file. Work with glossner's own capture locally. Share only reviewed output from the tool.
 
 ## Capture one download
 
@@ -10,7 +10,7 @@ The HAR skeleton describes the requests involved in downloading a QFX file. Work
 
 ## Run locally
 
-Run from the repository root with Python 3.10 or later. Substitute paths to a private local folder for both the capture and output.
+Run from the repository root. `python3 --version` must show Python 3.10 or newer. On Windows, check the interpreter selected by `py -3 --version`. Substitute paths to a private local folder for both the capture and output.
 
 WSL, using a directory on the WSL Linux filesystem for owner-only mode `600`:
 
@@ -46,9 +46,27 @@ Before writing, the tool checks retained strings, including header names, parame
 
 The check also looks for email addresses, dates, amounts, JWTs and token-like base64. It recognizes generated hints and buckets, conventional structural names, and common protocol declarations in web assets. It treats a first-party origin in protocol headers such as `Access-Control-Allow-Origin` as structural metadata. The same text in a credential or query value still triggers a refusal if copied. A refusal writes no skeleton and reports only field positions.
 
+## Diagnose a refusal
+
+WSL:
+
+```sh
+python3 -I tools/har_skeleton.py --diagnose "$HOME/private/chase-download.har" > har-diagnose.txt
+```
+
+Windows PowerShell:
+
+```powershell
+py -3 -I tools\har_skeleton.py --diagnose "$env:LOCALAPPDATA\Private\chase-download.har" > har-diagnose.txt
+```
+
+`--diagnose` always exits nonzero. It writes a JSON report to stdout, including on a clean run, and accepts neither `-o` nor `--force`. The report gives the tool and Python versions, entry count, and count of distinct offender paths. Each bucket counts paths by rule and field kind. Copied-value buckets also count paths by the kind of input source that matched. One path can count toward several rules or source kinds. Each bucket includes up to five field positions and descriptions using only length ranges and character classes. A `processing-failed` report uses `null` for an unavailable count.
+
+Skim `har-diagnose.txt` before sharing. The report uses fixed labels, numeric counts, and field positions. Keep the HAR local.
+
 ## Review and delete
 
-If the self-check reports offenders, share only the printed field paths, such as `$.entries[0].response.headers[3]`. Keep the HAR and private values local. Legitimate names can still resemble secrets to the check.
+If the self-check reports offenders, share only the reviewed diagnostic report or the printed field paths, such as `$.entries[0].response.headers[3]`. Keep the HAR and private values local. Legitimate names can still resemble secrets to the check.
 
 Open the output locally in a text editor before sharing. Look at every origin, path, name, MIME token, and filename extension. Check for session and device identifiers, names, email addresses, account numbers or suffixes, balances, transactions, and other private data. Short strings, tokens that look like ordinary names, and information encoded in counts or request ordering can escape the checks. A successful run leaves the source HAR sensitive.
 

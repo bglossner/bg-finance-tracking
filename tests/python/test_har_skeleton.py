@@ -140,7 +140,7 @@ def chrome_http2_har():
     accounts['request']['url'] = ('https://asset.chase.com/svc/rr/accounts/secure/v1/activity/'
                                   f'{ACCOUNT}?includeAccountDetails=true')
     accounts['response']['headers'].extend([
-        header('Access-Control-Allow-Headers', 'content-type'),
+        header('Access-Control-Expose-Headers', 'content-type'),
         header('X-Client-ResponseTimingPolicy', 'fake policy context'),
     ])
     beacon = entry('https://asset.chase.com/api/recent%69tems/stylesheet', method='POST',
@@ -356,6 +356,38 @@ class HarSkeletonTests(unittest.TestCase):
         result = self.run_tool('-o', self.destination)
         self.assert_refused(result, ['$.entries[0].origin', '$.entries[0].request.content_type',
                                      '$.entries[0].response.mime'], origin, mime)
+
+    def test_cors_and_accept_mirrors_require_related_structure(self):
+        name = 'synthetic-private-key'
+        mime = 'text/plain'
+        first = entry('https://asset.chase.com/api', mime=mime,
+                      request_headers=[header(name, 'fake')])
+        second = entry('https://asset.chase.com/other', response_headers=[
+            header('Access-Control-Expose-Headers', name), header('Accept', mime),
+        ])
+        self.har['log']['entries'] = [first, second]
+        self.assert_refused(self.run_tool('-o', self.destination),
+                            ['$.entries[0].request.headers[0]', '$.entries[0].response.mime'], name, mime)
+
+        second['response']['headers'].append(header(name, 'fake'))
+        second['response']['headers'][0]['value'] = mime
+        second['response']['content']['mimeType'] = mime
+        self.successful(self.run_tool())
+
+    def test_http2_token_checks_survive_structure_exemptions(self):
+        token = 'v8ss5qb9km2zde6p'
+        for name in (token, token.upper(), 'qBkaf_LuWslqWKszTmna'):
+            with self.subTest(name=name):
+                first = entry('https://asset.chase.com/api',
+                              request_headers=[header(f'X-{name}', 'fake')],
+                              text=json.dumps({name: True}))
+                self.har['log']['entries'] = [first]
+                self.assert_refused(self.run_tool('-o', self.destination),
+                                    ['$.entries[0].request.headers[0]',
+                                     '$.entries[0].response.body.fields[0].name'], name, name.lower())
+        self.har['log']['entries'] = [entry(f'https://{token}.chase.com/api', mime=f'text/{token}')]
+        self.assert_refused(self.run_tool('-o', self.destination),
+                            ['$.entries[0].origin', '$.entries[0].response.mime'], token)
 
     def test_chrome_http2_windows_bytes_match_utf8_lf(self):
         text = json.dumps(chrome_http2_har(), indent=2)

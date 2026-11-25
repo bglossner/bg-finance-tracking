@@ -71,6 +71,8 @@ MONEY = re.compile(r'(?:\$|\bUSD)\s*[+-]?\s*(?:\d|[.,]\d)|'
 JWT = re.compile(r'eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}', re.I)
 BLOB = re.compile(r'[A-Za-z0-9+/_-]{16,}={0,2}')
 HEX_BLOB = re.compile(r'[a-fA-F0-9]{16,}')
+LONG_ALNUM = re.compile(r'[A-Za-z0-9]{16,}')
+EMBEDDED_DIGITS = re.compile(r'(?<=[A-Za-z])[0-9]+(?=[A-Za-z])')
 CAMEL_BOUNDARY = re.compile(r'(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
 SHORT_NAME_WORDS = frozenset('a an as at by for id if in no of on or to ui uk us'.split())
 NAME_ACRONYMS = frozenset('ABA ACH API APR APY ATM BIC BIN CSP CSRF CSV CVV DNS HTML HTTP HTTPS IBAN ID IP '
@@ -109,10 +111,11 @@ HTML_ROUTE_ATTRIBUTES = {'href': frozenset('a area base image link use'.split())
                          'xlink:href': frozenset('a image use'.split())}
 REQUEST_ORIGIN_HEADERS = frozenset({'origin', 'referer'})
 RESPONSE_ORIGIN_HEADERS = frozenset({'access-control-allow-origin', 'location', 'timing-allow-origin'})
-CORS_HEADER_LISTS = {
-    'request': frozenset({'access-control-request-headers'}),
-    'response': frozenset({'access-control-allow-headers', 'access-control-expose-headers'}),
-}
+CORS_HEADER_LISTS = (
+    ('request', 'access-control-request-headers', 'request'),
+    ('response', 'access-control-allow-headers', 'request'),
+    ('response', 'access-control-expose-headers', 'response'),
+)
 BROWSER_METADATA_ENUMS = {
     '_priority': frozenset('verylow low medium high veryhigh'.split()),
     '_resourceType': frozenset('document stylesheet image media font script texttrack xhr fetch prefetch '
@@ -497,9 +500,10 @@ def header_shape(side, sources, *, response=False, authority='', target='', meth
         values[name].append(value)
         sources.structural_occurrence(original)
         # Check the original spelling before lowercasing can hide token-like casing.
-        if blob_like(original, 'headers'):
+        if blob_like(original, 'headers') or opaque_alphanumeric(original, 'headers'):
             sources.remember(original, 'header-name')
-        if (name == 'content-type' and mime_type(value)) or (name == 'accept' and accept_type(value)):
+        if (name == 'content-type' and mime_type(value)) or (
+                not response and name == 'accept' and accept_type(value)):
             sources.structural_occurrence(value, 'header-value')
             if name == 'content-type' and ';' in value:
                 mime_header(value, 'Content-Type', sources)
@@ -796,6 +800,9 @@ def response_shape(response, sources):
     content = require(response.get('content', {}), dict)
     declared_mime = require(content.get('mimeType', ''), str)
     mime = mime_type(declared_mime) or mime_type(first_header(headers, 'content-type'))
+    for value in headers.get('accept', ()):
+        if mime and accept_type(value) == mime:
+            sources.structural_occurrence(value, 'header-value')
     if mime_type(declared_mime):
         sources.structural_occurrence(declared_mime)
         if ';' in declared_mime:
@@ -887,17 +894,15 @@ def exclude_browser_metadata(entry, sources):
             sources.structural_occurrence(value)
 
 
-def exclude_cors_header_mirrors(entries, output, sources):
-    retained_names = {name for entry in output for side in CORS_HEADER_LISTS
-                      for name in entry[side]['headers']}
-    for entry in entries:
-        for side, list_headers in CORS_HEADER_LISTS.items():
-            for header in entry[side].get('headers', []):
-                if header['name'].lower() in list_headers:
-                    value = header['value']
-                    names = [name.strip().lower() for name in value.split(',')]
-                    if all(name in retained_names and HTTP_TOKEN.fullmatch(name) for name in names):
-                        sources.structural_occurrence(value, 'header-value')
+def exclude_cors_header_mirrors(entry, outline, sources):
+    for side, list_header, mirrored_side in CORS_HEADER_LISTS:
+        retained_names = set(outline[mirrored_side]['headers'])
+        for header in entry[side].get('headers', []):
+            if header['name'].lower() == list_header:
+                value = header['value']
+                names = [name.strip().lower() for name in value.split(',')]
+                if all(name in retained_names and HTTP_TOKEN.fullmatch(name) for name in names):
+                    sources.structural_occurrence(value, 'header-value')
 
 
 def make_skeleton(document, include_host, sources):
@@ -930,13 +935,14 @@ def make_skeleton(document, include_host, sources):
         duration = entry.get('time', -1)
         if type(duration) not in (int, float):
             raise InvalidInput
-        output.append({'index': index, 'relative_seconds': round((started - first).total_seconds()),
-                       'duration_ms_bucket': bucket(duration, DURATION_BOUNDS),
-                       'method': method if method in METHODS else '<method>',
-                       'origin': origin, 'path': path, 'query': pair_shape(pairs or declared),
-                       'request': request_info, 'response': response})
+        outline = {'index': index, 'relative_seconds': round((started - first).total_seconds()),
+                   'duration_ms_bucket': bucket(duration, DURATION_BOUNDS),
+                   'method': method if method in METHODS else '<method>',
+                   'origin': origin, 'path': path, 'query': pair_shape(pairs or declared),
+                   'request': request_info, 'response': response}
+        exclude_cors_header_mirrors(entry, outline, sources)
+        output.append(outline)
         counts[path] += 1
-    exclude_cors_header_mirrors(entries, output, sources)
     return {'entries': output, 'path_counts': [{'path': path, 'count': count}
                                                for path, count in sorted(counts.items())]}
 
@@ -1028,6 +1034,8 @@ def suspect(value, field):
             yield rule
     if DATE.search(value) or TEXT_DATE.search(value):
         yield 'date'
+    if opaque_alphanumeric(value, field):
+        yield 'opaque-alphanumeric'
     if blob_like(value, field):
         yield 'base64-like'
 
@@ -1168,8 +1176,15 @@ def canonical_base64(value):
 
 def canonical_blob(candidate):
     plain = candidate.rstrip('=')
-    if plain != candidate and canonical_base64(plain):
+    if (plain != candidate or '-' in plain or '_' in plain) and canonical_base64(plain):
         return True
+    # A header prefix can mask a canonical token containing a URL-safe separator.
+    for separator in re.finditer(r'[-_]', plain):
+        suffix = plain[separator.end():]
+        if len(suffix) < 16:
+            break
+        if ('-' in suffix or '_' in suffix) and canonical_base64(suffix):
+            return True
     # A header name can prepend a label to a 128- or 256-bit token.
     for width in (22, 43):
         if len(plain) == width or (len(plain) > width and plain[-width - 1] in '-_'):
@@ -1177,6 +1192,15 @@ def canonical_blob(candidate):
             if re.search(r'[a-z]', token) and re.search(r'[A-Z]', token) and canonical_base64(token):
                 return True
     return False
+
+
+def opaque_alphanumeric(value, field):
+    # DNS and MIME tokens can include ordinary vendor versions in lowercase.
+    structured = ((field == 'origin' and structured_origin(value))
+                  or (field in ('accept', 'content_type', 'mime') and MIME.fullmatch(value)))
+    minimum_groups = 3 if structured else 1
+    return any(len(EMBEDDED_DIGITS.findall(candidate)) >= minimum_groups and not name_word(candidate)
+               for candidate in LONG_ALNUM.findall(value))
 
 
 def blob_like(value, field):

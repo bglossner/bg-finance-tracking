@@ -54,8 +54,10 @@ SCRIPT_MIMES = frozenset('''
     text/x-ecmascript text/x-javascript
 '''.split())
 WEB_MIMES = HTML_MIMES | SCRIPT_MIMES | {'text/css'}
-STATIC_MIMES = WEB_MIMES | {'application/wasm', 'application/source-map', 'application/x-sourcemap',
-                           'application/font-woff', 'application/font-sfnt', 'application/vnd.ms-fontobject'}
+STATIC_TEXT_MIMES = WEB_MIMES | {'application/source-map', 'application/x-sourcemap'}
+STATIC_BINARY_MIMES = {'application/wasm', 'application/font-woff', 'application/font-sfnt',
+                       'application/vnd.ms-fontobject'}
+STATIC_BINARY_PREFIXES = ('audio/', 'font/', 'image/', 'video/')
 STATIC_RESOURCES = frozenset({'script', 'stylesheet', 'font', 'image', 'media', 'sourcemap'})
 OFX_START = re.compile(rb'(?:OFXHEADER[ \t]*:|<OFX(?:[\s>]))', re.IGNORECASE)
 SGML = re.compile(r'<!--(?P<comment>.*?)-->|<!\[CDATA\[(?P<cdata>.*?)\]\]>|'
@@ -110,11 +112,15 @@ JSON_DEPTH_LIMIT = 6
 JSON_KEY_LIMIT = 40
 KEY_TEMPLATES = frozenset({'<num-key>', '<key:email>', '<key:route>', '<key:opaque>', '<key:other>'})
 TAG_TEMPLATE = '<tag:opaque>'
-AUTH_ROUTE = re.compile(r'(?:^|[^a-z0-9])(?:log[-_]?in|sign[-_]?in|auth(?:entication|enticate)?|oauth2?|'
-                        r'sso|credentials|session|mfa|token)(?:[^a-z0-9]|$)', re.I)
+AUTH_ROUTE = re.compile(r'(?:^|[^a-z0-9])(?:log[-_]?(?:in|on)|sign[-_]?in|auth(?:entication|enticate)?|oauth2?|'
+                        r'sso|credentials|session|mfa|token|recover(?:y)?|reset[-_]?password)'
+                        r'(?:[^a-z0-9]|$)', re.I)
 SECRET_FIELD = re.compile(r'(?:^|[^a-z0-9])(?:password|passwd|passcode|pwd|pin|credential[s]?|'
                           r'secret[s]?|private|auth(?:entication|orization)?|bearer|token|csrf|xsrf|session|'
-                          r'otp|api[-_]?key|device)(?:[^a-z0-9]|$)', re.I)
+                          r'otp|(?:api|access|refresh)[-_]?key|device|principal|'
+                          r'(?:user|customer|first|last|full|legal)[-_]?name|'
+                          r'(?:recovery|security)[-_]?answer)(?:[^a-z0-9]|$)', re.I)
+COMPACT_CREDENTIAL = re.compile(r'(?:session|csrf|xsrf|auth|access|refresh|api)(?:id|token|key)$', re.I)
 PRIVATE_VALUE = re.compile(r'^(?:private|secret|credential|password|session|csrf|xsrf|bearer|token)(?=[A-Z_.-])')
 TOKEN = re.compile(r'''[^\s"'=<>{}(),;]+''')
 MIME_PARAMETER = re.compile(r';\s*((?:"(?:[^"\\]|\\.)*"|[^";])*)')
@@ -122,18 +128,10 @@ CDATA_TEXT = re.compile(r'<!\[CDATA\[(.*?)\]\]>', re.S)
 WEB_LITERAL = re.compile(r'''(?P<comment>/\*.*?\*/|//[^\r\n]*)|'''
                          r'''(?P<quoted>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)''', re.S)
 WEB_PROPERTY_END = re.compile(r'\s*:')
-WEB_MIME_START = re.compile(r'''["'](?:content-type|accept)["']\s*:\s*\Z''', re.I)
-JS_ROUTE_START = re.compile(r'(?<![\w$.])(?:(?:(?:window|self|globalThis)\.)?fetch|'
-                            r'new\s+(?:(?:window|self|globalThis)\.)?Request)\s*\(\s*\Z')
-CSS_ROUTE_START = re.compile(r'\burl\s*\(\s*\Z', re.I)
-HTML_MIME_TAGS = frozenset('a embed link object script source style'.split())
-HTML_ROUTE_ATTRIBUTES = {'href': frozenset('a area base image link use'.split()),
-                         'src': frozenset('audio embed iframe img input script source track video'.split()),
-                         'xlink:href': frozenset('a image use'.split())}
-CDATA_TEXT = re.compile(r'<!\[CDATA\[(.*?)\]\]>', re.S)
-WEB_LITERAL = re.compile(r'''(?P<comment>/\*.*?\*/|//[^\r\n]*)|'''
-                         r'''(?P<quoted>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)''', re.S)
-WEB_PROPERTY_END = re.compile(r'\s*:')
+ASSET_FIELD = re.compile(r'(?P<quote>["\']?)(?P<name>[A-Za-z_$][\w.$-]{0,127})(?P=quote)\s*[:=]\s*'
+                         r'(?P<value>"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|`(?:[^`\\]|\\.)*`|[0-9]+)')
+ASSET_MARKUP = re.compile(r'<(?:input|meta)\b[^>]{0,8192}>', re.I)
+ASSET_TOKEN = re.compile(r'''[^\s"'`=<>{}(),;!?]+''')
 WEB_MIME_START = re.compile(r'''["'](?:content-type|accept)["']\s*:\s*\Z''', re.I)
 JS_ROUTE_START = re.compile(r'(?<![\w$.])(?:(?:(?:window|self|globalThis)\.)?fetch|'
                             r'new\s+(?:(?:window|self|globalThis)\.)?Request)\s*\(\s*\Z')
@@ -200,7 +198,9 @@ def scalars(value):
 
 
 def secret_field(name):
-    return SECRET_FIELD.search(CAMEL_BOUNDARY.sub('-', name)) is not None
+    normalized = CAMEL_BOUNDARY.sub('-', name)
+    return (SECRET_FIELD.search(normalized) is not None or
+            any(COMPACT_CREDENTIAL.fullmatch(part) for part in re.split(r'[-_.]', normalized)))
 
 
 def auth_path(path):
@@ -214,7 +214,8 @@ def looks_sensitive(text):
             or '?' in text or '#' in text or not text.isascii()):
         return True
     if structured_origin(lowered) or MIME.fullmatch(lowered):
-        return opaque_alphanumeric(lowered, 'mime' if MIME.fullmatch(lowered) else 'origin')
+        field = 'mime' if MIME.fullmatch(lowered) else 'origin'
+        return opaque_alphanumeric(lowered, field) or HEX_BLOB.search(lowered) is not None
     if PATH.fullmatch(text):
         return False
     if opaque_alphanumeric(text, 'name') or blob_like(text, 'name'):
@@ -289,6 +290,7 @@ class InputValues:
         self.structural_occurrence(value, 'header-value', selective=not strict_header_value(name))
 
     def remember_secret(self, value, kind):
+        value = value.strip()
         if 0 < len(value) < 8:
             text = value.casefold()
             self.short_secrets.add(text)
@@ -416,13 +418,14 @@ def name_shape(name, field='name'):
     return name
 
 
-def shaped_names(items):
+def shaped_names(items, sources):
     fields = []
     templated = Counter()
     for name, hint in items:
         shaped = name_shape(name)
         if shaped in KEY_TEMPLATES:
             templated[shaped] += 1
+            sources.remember(name, 'templated-name')
             continue
         field = {'name': name}
         if hint is not None:
@@ -484,6 +487,8 @@ def encoded_pairs(text, sources, *, from_post=False, strict=False):
     if re.search(r'%(?![0-9a-fA-F]{2})', text):
         raise InvalidInput
     pairs = parse_qsl(text, keep_blank_values=True, errors='strict')
+    names = {name.lower() for name, _ in pairs}
+    strict = strict or {'code', 'state'} <= names
     kind = 'form-value' if from_post else 'query-value'
     for name, value in pairs:
         remember_pair(name, value, kind, sources, strict=strict)
@@ -503,13 +508,16 @@ def declared_pairs(items, sources, kind, *, strict=False):
         name = require(item['name'], str)
         value = require(item.get('value', ''), str)
         sources.structural_occurrence(name)
-        remember_pair(name, value, kind, sources, strict=strict)
         pairs.append((name, value))
+    names = {name.lower() for name, _ in pairs}
+    for name, value in pairs:
+        remember_pair(name, value, kind, sources, strict=strict or {'code', 'state'} <= names)
     return pairs
 
 
-def pair_shape(pairs):
-    return shaped_names((name, value_hint(value)) for name, value in sorted(pairs, key=lambda pair: pair[0]))
+def pair_shape(pairs, sources):
+    return shaped_names(((name, value_hint(value)) for name, value in sorted(pairs, key=lambda pair: pair[0])),
+                        sources)
 
 
 def bank_host(host):
@@ -634,7 +642,7 @@ def mime_header(value, header, sources):
     return message
 
 
-def header_shape(side, sources, *, response=False, authority='', target='', method=''):
+def header_shape(side, sources, *, response=False, authority='', target='', method='', strict=False):
     names = set()
     values = defaultdict(list)
     origin_headers = RESPONSE_ORIGIN_HEADERS if response else REQUEST_ORIGIN_HEADERS
@@ -656,6 +664,8 @@ def header_shape(side, sources, *, response=False, authority='', target='', meth
                 sources.remember_secret(credentials[-1], 'header-value')
         elif secret_field(original) and name not in ('cookie', 'set-cookie'):
             sources.remember_secret(value.strip(), 'header-value')
+        elif strict and name.startswith('x-'):
+            sources.remember_secret(value.strip(), 'header-value')
         if not response and name == 'referer':
             remember_referer(value, sources)
         if not response and name == ':path':
@@ -671,7 +681,10 @@ def header_shape(side, sources, *, response=False, authority='', target='', meth
         if name != ('set-cookie' if response else 'cookie'):
             # Check both spellings because the output normalizes header names.
             shaped = name_shape(original, 'headers')
-            names.add(name_shape(name, 'headers') if shaped == original else shaped)
+            shaped = name_shape(name, 'headers') if shaped == original else shaped
+            if shaped in KEY_TEMPLATES:
+                sources.remember(original, 'header-name')
+            names.add(shaped)
     cookies = require(side.get('cookies', []), list)
     for cookie in cookies:
         cookie = require(cookie, dict)
@@ -742,12 +755,13 @@ def request_body(request, headers, sources, *, strict):
     text = require(post.get('text', ''), str)
     declared = declared_pairs(post.get('params', []), sources, 'form-value', strict=strict)
     if mime == FORM:
-        body = pair_shape(encoded_pairs(text, sources, from_post=True, strict=strict) if text else declared)
+        pairs = encoded_pairs(text, sources, from_post=True, strict=strict) if text else declared
+        body = pair_shape(pairs, sources)
     elif is_json_mime(mime):
         body = parsed_json_shape(text, sources, strict=strict)
     elif mime == MULTIPART:
         names = multipart_names(text, raw_mime, sources, strict) if text else [name for name, _ in declared]
-        body = shaped_names((name, None) for name in sorted(names))
+        body = shaped_names(((name, None) for name in sorted(names)), sources)
     else:
         remember_opaque_text(text, sources, strict=strict)
         size = require(request.get('bodySize', -1), int)
@@ -762,7 +776,10 @@ def remember_json_values(data, sources, *, strict=False):
     while pending:
         value, strict = pending.pop()
         if isinstance(value, dict):
-            pending.extend((child, strict or secret_field(name)) for name, child in value.items())
+            for name, child in value.items():
+                if not name.startswith('_') and name_shape(name) in KEY_TEMPLATES:
+                    sources.remember(name, 'templated-name')
+                pending.append((child, strict or secret_field(name)))
         elif isinstance(value, list):
             pending.extend((child, strict) for child in value)
         elif strict and (isinstance(value, str) or type(value) in (int, float)):
@@ -877,7 +894,7 @@ class HtmlValues(HTMLParser):
                 data = CDATA_TEXT.sub(r'\1', data)
         if self.code_mime is not None and is_json_mime(self.code_mime):
             if data.strip():
-                self.sources.remember(parse_json(data), 'json-scalar')
+                remember_json_values(parse_json(data), self.sources, strict=True)
         else:
             remember_text(data, self.sources, web_mime=self.code_mime or None)
 
@@ -897,6 +914,48 @@ class HtmlValues(HTMLParser):
         super().close()
         if self.code_mime is not None:
             raise InvalidInput
+
+
+class AssetCredentialMarkup(HTMLParser):
+    def __init__(self, sources):
+        super().__init__()
+        self.sources = sources
+
+    def handle_starttag(self, _tag, attrs):
+        values = dict(attrs)
+        for key, value in attrs:
+            if value and secret_field(key):
+                self.sources.remember_secret(value, 'body-token')
+        if any(secret_field(values.get(key) or '') for key in ('name', 'id', 'property')):
+            for key in ('value', 'content'):
+                if values.get(key):
+                    self.sources.remember_secret(values[key], 'body-token')
+
+
+def asset_credentials(text, sources):
+    # Scan credential values without collecting whole bundle lines or protocol literals.
+    for match in ASSET_FIELD.finditer(text):
+        if secret_field(match['name']):
+            literal = match['value']
+            value = literal if literal.isdecimal() else literal[1:-1]
+            sources.remember_secret(value, 'body-token')
+            if literal.startswith('"') and '\\' in value:
+                try:
+                    sources.remember_secret(json.loads(literal), 'body-token')
+                except ValueError:
+                    pass
+    for match in ASSET_TOKEN.finditer(text):
+        value = match[0]
+        if (len(value) >= 8 and not (PATH.fullmatch(value) or MIME.fullmatch(value.lower())
+                                    or structured_origin(value.lower()))
+                and (DIGITS.search(value) or JWT.search(value) or has_email(value)
+                     or opaque_alphanumeric(value, 'name') or blob_like(value, 'name'))):
+            sources.remember(value, 'body-token')
+    if '<' in text:
+        parser = AssetCredentialMarkup(sources)
+        for match in ASSET_MARKUP.finditer(text):
+            parser.feed(match[0])
+        parser.close()
 
 
 def tag_shape(name, *, ofx=False):
@@ -970,7 +1029,7 @@ def disposition_shape(value, sources):
 
 
 def static_response(mime, resource, request_path):
-    if mime in STATIC_MIMES or mime.startswith(('audio/', 'font/', 'image/', 'video/')):
+    if mime in STATIC_TEXT_MIMES or mime in STATIC_BINARY_MIMES or mime.startswith(STATIC_BINARY_PREFIXES):
         return True
     if mime in OFX_MIMES or mime in ('text/xml', 'application/xml') or mime.endswith('+xml'):
         return False
@@ -982,7 +1041,7 @@ def static_response(mime, resource, request_path):
 
 
 def response_shape(response, sources, *, resource, request_path, strict):
-    result, headers = header_shape(response, sources, response=True)
+    result, headers = header_shape(response, sources, response=True, strict=strict)
     redirect = response.get('redirectURL')
     if (isinstance(redirect, str) and bank_origin(redirect)
             and any(redirect.strip().casefold() == value.strip().casefold()
@@ -1008,11 +1067,18 @@ def response_shape(response, sources, *, resource, request_path, strict):
     text = require(content.get('text', ''), str)
     encoding = require(content.get('encoding', ''), str)
     body = '<omitted>'
-    if not strict and static_response(mime, resource, request_path):
-        text = ''
     is_json = is_json_mime(mime)
     is_xml = (mime in ('text/xml', 'application/xml') or mime.endswith('+xml')) and mime not in HTML_MIMES
     qfx_filename = extension in ('.ofx', '.qfx')
+    if not qfx_filename and static_response(mime, resource, request_path):
+        if text and mime not in STATIC_BINARY_MIMES and not mime.startswith(STATIC_BINARY_PREFIXES):
+            value = (base64.b64decode(text, validate=True).decode('utf-8', errors='replace')
+                     if encoding == 'base64' else text)
+            asset_credentials(value, sources)
+        if not strict:
+            text = ''
+    if text and encoding == 'base64':
+        sources.remember(text, 'body-text')
     possible_ofx = mime in DOWNLOAD_MIMES or qfx_filename
     declared_ofx = mime in OFX_MIMES or (qfx_filename and mime in DOWNLOAD_MIMES)
     if text and (is_json or is_xml or declared_ofx or possible_ofx):
@@ -1191,7 +1257,8 @@ def make_skeleton(document, include_host, sources):
         request_path = urlsplit(raw_url).path
         strict = auth_path(request_path)
         declared = declared_pairs(request.get('queryString', []), sources, 'query-value', strict=strict)
-        request_info, headers = header_shape(request, sources, authority=authority, target=target, method=method)
+        request_info, headers = header_shape(request, sources, authority=authority, target=target, method=method,
+                                             strict=strict)
         content_type = mime_type(first_header(headers, 'content-type'))
         accept = accept_type(first_header(headers, 'accept'))
         if content_type:
@@ -1207,7 +1274,7 @@ def make_skeleton(document, include_host, sources):
         outline = {'index': index, 'relative_seconds': round((started - first).total_seconds()),
                    'duration_ms_bucket': bucket(duration, DURATION_BOUNDS),
                    'method': method if method in METHODS else '<method>',
-                   'origin': origin, 'path': path, 'query': pair_shape(pairs or declared),
+                   'origin': origin, 'path': path, 'query': pair_shape(pairs or declared, sources),
                    'request': request_info, 'response': response}
         output.append(outline)
         counts[path] += 1
@@ -1337,8 +1404,7 @@ def self_check(output, sources, diagnostics=None):
                     check(key, f'{location}.key[{index}]', '', kind_hint='object-key')
                     scan(child, f'{location}.value[{index}]', '')
         elif isinstance(value, list):
-            if (diagnostics is not None and location.endswith('.response.body')
-                    and value and isinstance(value[0], str)):
+            if location.endswith('.response.body') and value and isinstance(value[0], str):
                 kind_hint = 'ofx-tag' if value[0].upper() == 'OFX' else 'xml-tag'
             for index, item in enumerate(value):
                 scan(item, f'{location}[{index}]', field, kind_hint)
@@ -1357,6 +1423,8 @@ def self_check(output, sources, diagnostics=None):
             valid = field not in ('name', 'headers') or name_ok(value, field)
             if field == 'path':
                 valid = bool(PATH.fullmatch(value))
+            elif kind_hint in ('ofx-tag', 'xml-tag'):
+                valid = tag_shape(value, ofx=kind_hint == 'ofx-tag') == value
             elif field == 'disposition' and (match := DISPOSITION.fullmatch(value)):
                 scanned = match[1]
             check(value, location, field, valid=valid, scanned=scanned, kind_hint=kind_hint)

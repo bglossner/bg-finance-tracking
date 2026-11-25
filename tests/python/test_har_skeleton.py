@@ -400,6 +400,79 @@ class HarSkeletonTests(unittest.TestCase):
         self.assert_refused(self.run_tool('-o', self.destination),
                             ['$.entries[1].response.body.fields[0].name'], marker)
 
+    def test_authorization_callback_collects_code_and_state(self):
+        marker = 'samplecode'
+        echo = entry('https://secure.chase.com/api', text=json.dumps({marker: True}))
+        callback = 'https://secure.chase.com/callback?code=samplecode&state=fakedemo'
+        for source in (entry(callback), entry('https://secure.chase.com/api',
+                                              request_headers=[header('Referer', callback)])):
+            self.har['log']['entries'] = [source, echo]
+            self.assert_refused(self.run_tool('-o', self.destination),
+                                ['$.entries[1].response.body.fields[0].name'], marker)
+
+    def test_omitted_assets_still_collect_suspicious_tokens_and_explicit_credentials(self):
+        marker = 'SyntheticMarker'
+        short = 'fakekey'
+        target = entry('https://secure.chase.com/api', text=json.dumps({marker: True, short: True}))
+        cases = (
+            ('/dashboard', 'text/html', f'<input type="hidden" name="csrf" value="{marker}">'),
+            ('/bootstrap', 'application/javascript', f'window.page = {{"csrf": "{marker}"}};'),
+            ('/scripts/example.map', 'application/json', f'{{"token":"{marker}"}}'),
+            ('/auth/login', 'text/html', '<script type="application/json">'
+                                       f'{{"password":"{short}"}}</script>'),
+            ('/auth/login', 'application/javascript', f'window.page = {{password: "{short}"}};'),
+        )
+        for request_path, mime, text in cases:
+            with self.subTest(mime=mime, request_path=request_path):
+                asset = entry('https://secure.chase.com' + request_path, mime=mime, text=text)
+                self.har['log']['entries'] = [target, asset]
+                field_index = 1 if short in text else 0
+                self.assert_refused(self.run_tool('-o', self.destination),
+                                    [f'$.entries[0].response.body.fields[{field_index}].name'],
+                                    marker, short)
+
+    def test_compact_credential_names_and_auth_padding(self):
+        marker = 'SyntheticMarker'
+        short = 'fakekey'
+        target = entry('https://secure.chase.com/api', text=json.dumps({marker: True, short: True}))
+        for name in ('x-sessionid', 'x-access-key', 'x-api-key'):
+            with self.subTest(header=name):
+                source = entry('https://secure.chase.com/api', request_headers=[header(name, marker)])
+                self.har['log']['entries'] = [target, source]
+                self.assert_refused(self.run_tool('-o', self.destination),
+                                    ['$.entries[0].response.body.fields[0].name'], marker)
+        for name in ('sessionid', 'userName', 'principal', 'customerName', 'access_key'):
+            with self.subTest(json=name):
+                source = entry('https://secure.chase.com/api', text=json.dumps({name: marker}))
+                self.har['log']['entries'] = [target, source]
+                self.assert_refused(self.run_tool('-o', self.destination),
+                                    ['$.entries[0].response.body.fields[0].name'], marker)
+        source = entry('https://secure.chase.com/auth/login', request_headers=[
+            header('Authorization', f'Bearer {short} \t'),
+        ])
+        self.har['log']['entries'] = [target, source]
+        self.assert_refused(self.run_tool('-o', self.destination),
+                            ['$.entries[0].response.body.fields[1].name'], short)
+
+    def test_templated_name_still_blocks_a_copy_in_another_field(self):
+        original = 'sYntheTICMarker1'
+        first = entry('https://secure.chase.com/api', request_headers=[header(original, 'fake')],
+                      text=json.dumps({original.lower(): True}))
+        self.har['log']['entries'] = [first]
+        self.assert_refused(self.run_tool('-o', self.destination),
+                            ['$.entries[0].response.body.fields[0].name'], original, original.lower())
+
+    def test_encoded_credential_text_remains_sensitive(self):
+        text = 'aaaaaa'
+        encoded = base64.b64encode(text.encode()).decode()
+        source = entry('https://secure.chase.com/auth', mime='text/plain', text=encoded)
+        source['response']['content']['encoding'] = 'base64'
+        echo = entry('https://secure.chase.com/api',
+                     request_headers=[header(f'x-{encoded.lower()}', 'fake')])
+        self.har['log']['entries'] = [source, echo]
+        self.assert_refused(self.run_tool('-o', self.destination),
+                            ['$.entries[1].request.headers[0]'], text, encoded)
+
     def test_form_query_and_tag_names_are_templated(self):
         route = 'account/transaction'
         tag = 'ACCOUNTREF7429TOKEN'
@@ -415,6 +488,13 @@ class HarSkeletonTests(unittest.TestCase):
         self.assertEqual(outline['response']['body'], ['report', '<tag:opaque>'])
         for value in (route, tag, EMAIL):
             self.assertNotIn(value, result.stdout)
+
+    def test_download_shape_takes_priority_over_static_resource_hint(self):
+        first = entry('https://secure.chase.com/download', mime='application/octet-stream', text=QFX,
+                      response_headers=[header('Content-Disposition', f'attachment; filename="{FILE_NAME}"')])
+        first['_resourceType'] = 'image'
+        self.har['log']['entries'] = [first]
+        self.assertEqual(self.successful(self.run_tool())['entries'][0]['response']['body'], TAGS)
 
     def test_http2_path_only_query_value_is_still_sensitive(self):
         token = 'privateMarker'

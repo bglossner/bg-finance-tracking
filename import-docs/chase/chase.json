@@ -69,7 +69,7 @@
           },
           {
             "name": "sec-ch-ua",
-            "value": "\"Chromium\";v=\"158\", \"Not.A/Brand\";v=\"24\", \"Google Chrome\";v=\"158\""
+            "value": "\"Sample Browser\";v=\"0\""
           },
           {
             "name": "sec-ch-ua-arch",
@@ -81,7 +81,7 @@
           },
           {
             "name": "sec-ch-ua-full-version-list",
-            "value": "\"Chromium\";v=\"158.0.8127.38\", \"Not.A/Brand\";v=\"24.0.0.0\", \"Google Chrome\";v=\"158.0.8127.38\""
+            "value": "\"Sample Browser\";v=\"0.0.0.0\""
           },
           {
             "name": "sec-ch-ua-mobile",
@@ -93,11 +93,11 @@
           },
           {
             "name": "sec-ch-ua-platform",
-            "value": "\"Windows\""
+            "value": "\"Linux\""
           },
           {
             "name": "sec-ch-ua-platform-version",
-            "value": "\"19.0.0\""
+            "value": "\"0.0.0\""
           },
           {
             "name": "sec-ch-ua-wow64",
@@ -117,7 +117,7 @@
           },
           {
             "name": "user-agent",
-            "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
+            "value": "Mozilla/5.0 (X11; Linux x86_64) SampleBrowser/0.0.0.0"
           }
         ],
         "queryString": [],
@@ -131,7 +131,7 @@
       "file_locations": ["credit-qfx.data"],
       "request": {
         "method": "GET",
-        "url": "https://secure.chase.com/svc/rr/accounts/secure/gateway/credit-card/transactions/inquiry-maintenance/digital-transaction-activity/v1/transaction-activities?digital-account-identifier=<ACCOUNT_IDENTIFIER>&start-date=20261102&end-date=20261124&account-activity-download-type-code=QFX&csrftoken=<CSRF_TOKEN>&submit=Submit&eligibility-indicator=true",
+        "url": "https://secure.chase.com/svc/rr/accounts/secure/gateway/credit-card/transactions/inquiry-maintenance/digital-transaction-activity/v1/transaction-activities?digital-account-identifier=SAMPLE_ACCOUNT%2B%2F&start-date=20261102&end-date=20261124&account-activity-download-type-code=QFX&csrftoken=SAMPLE_CSRF%2B%2F&submit=Submit&eligibility-indicator=true",
         "httpVersion": "http/2.0",
         "headers": [
           {
@@ -144,7 +144,7 @@
           },
           {
             "name": ":path",
-            "value": "/svc/rr/accounts/secure/gateway/credit-card/transactions/inquiry-maintenance/digital-transaction-activity/v1/transaction-activities?digital-account-identifier=<ACCOUNT_IDENTIFIER&start-date=20261102&end-date=20261124&account-activity-download-type-code=QFX&csrftoken=<CSRF_TOKEN>&submit=Submit&eligibility-indicator=true"
+            "value": "/svc/rr/accounts/secure/gateway/credit-card/transactions/inquiry-maintenance/digital-transaction-activity/v1/transaction-activities?digital-account-identifier=SAMPLE_ACCOUNT%2B%2F&start-date=20261102&end-date=20261124&account-activity-download-type-code=QFX&csrftoken=SAMPLE_CSRF%2B%2F&submit=Submit&eligibility-indicator=true"
           },
           {
             "name": ":scheme",
@@ -184,7 +184,7 @@
           },
           {
             "name": "sec-ch-ua",
-            "value": "\"Chromium\";v=\"158\", \"Not.A/Brand\";v=\"24\", \"Google Chrome\";v=\"158\""
+            "value": "\"Sample Browser\";v=\"0\""
           },
           {
             "name": "sec-ch-ua-arch",
@@ -196,7 +196,7 @@
           },
           {
             "name": "sec-ch-ua-full-version-list",
-            "value": "\"Chromium\";v=\"158.0.8127.38\", \"Not.A/Brand\";v=\"24.0.0.0\", \"Google Chrome\";v=\"158.0.8127.38\""
+            "value": "\"Sample Browser\";v=\"0.0.0.0\""
           },
           {
             "name": "sec-ch-ua-mobile",
@@ -208,11 +208,11 @@
           },
           {
             "name": "sec-ch-ua-platform",
-            "value": "\"Windows\""
+            "value": "\"Linux\""
           },
           {
             "name": "sec-ch-ua-platform-version",
-            "value": "\"19.0.0\""
+            "value": "\"0.0.0\""
           },
           {
             "name": "sec-ch-ua-wow64",
@@ -232,7 +232,7 @@
           },
           {
             "name": "user-agent",
-            "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
+            "value": "Mozilla/5.0 (X11; Linux x86_64) SampleBrowser/0.0.0.0"
           }
         ],
         "cookies": [],
@@ -261,7 +261,7 @@
         "cookies": [],
         "headersSize": -1,
         "bodySize": 0,
-        "formData": "transactionType=ALL&filterTranType=ALL&statementPeriodId=ALL&downloadType=QFX&accountId=<ACCOUNT_IDENTIFIER>&dateHi=20261125&dateLo=20261102&csrftoken=<CSRF_TOKEN>&submit=Submit"
+        "formData": "transactionType=ALL&filterTranType=ALL&statementPeriodId=ALL&downloadType=QFX&accountId=SAMPLE_ACCOUNT%2B%2F&dateHi=20261125&dateLo=20261102&csrftoken=SAMPLE_CSRF%2B%2F&submit=Submit"
       }
     }
   ]

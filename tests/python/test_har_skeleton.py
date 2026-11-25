@@ -292,7 +292,7 @@ class HarSkeletonTests(unittest.TestCase):
 
     def test_value_echoed_into_a_json_key_is_refused(self):
         secret = 'privateMarker'
-        for source in ('header', 'query', 'form', 'json', 'body', 'postData'):
+        for source in ('header', 'query', 'form', 'json', 'body', 'web body', 'postData', 'multipart'):
             with self.subTest(source=source):
                 accounts = entry('https://secure.chase.com/api/accounts',
                                  text=json.dumps({f'{secret}Copy': True}))
@@ -310,8 +310,17 @@ class HarSkeletonTests(unittest.TestCase):
                     content['text'] = json.dumps({'privateHint': [secret]})
                 elif source == 'body':
                     content.update(mimeType='text/plain', text=f'hello {secret} world')
-                else:
+                elif source == 'web body':
+                    content.update(mimeType='application/javascript', text=f'let variable = "{secret}";')
+                elif source == 'postData':
                     request['postData'] = {'mimeType': 'text/plain', 'text': f'hello {secret} world'}
+                else:
+                    request['postData'] = {
+                        'mimeType': 'multipart/form-data; boundary=pretendBoundary',
+                        'text': '--pretendBoundary\r\nContent-Disposition: form-data; name="details"\r\n'
+                                'Content-Type: application/json\r\n\r\n'
+                                r'{"alias":"private\u004darker"}' '\r\n--pretendBoundary--\r\n',
+                    }
                 self.har['log']['entries'] = [accounts, source_entry]
                 result = self.run_tool('-o', self.destination)
                 self.assert_refused(result, ['$.entries[0].response.body.fields[0].name'], secret)
@@ -335,6 +344,40 @@ class HarSkeletonTests(unittest.TestCase):
         self.har['log']['entries'] = [first]
         result = self.run_tool('-o', self.destination)
         self.assert_refused(result, ['$.entries[0].origin'], secret)
+
+    def test_exact_first_party_host_cannot_exempt_a_credential(self):
+        host = 'secure.chase.com'
+        for credential in (header('Cookie', f'exampleSession={host}'),
+                           header('Authorization', f'Bearer https://{host}')):
+            with self.subTest(source=credential['name']):
+                self.har['log']['entries'] = [
+                    entry(f'https://{host}/api', request_headers=[credential]),
+                ]
+                self.assert_refused(self.run_tool('-o', self.destination), ['$.entries[0].origin'], host)
+
+    def test_base64url_tokens_are_refused_in_structural_names(self):
+        token = 'I-sdtByincRGCWbyTRROkg'
+        first = entry('https://secure.chase.com/api', text=json.dumps({token: True}),
+                      request_headers=[header(f'X-Custom-{token}', 'fake')])
+        self.har['log']['entries'] = [first]
+        self.assert_refused(self.run_tool('-o', self.destination),
+                            ['$.entries[0].request.headers[0]', '$.entries[0].response.body.fields[0].name'],
+                            token, token.lower())
+
+    def test_web_asset_protocol_literals_and_versioned_names_are_retained(self):
+        names = ['addressLine1Verification', 'fido2AuthenticationEnabled', 'oauth2ClientConfiguration']
+        first = entry('https://secure.chase.com/api/accounts', text=json.dumps(dict.fromkeys(names, True)))
+        script = entry('https://assets.example.test/app/script', mime='application/javascript',
+                       text='fetch("/api/accounts", {headers: {"Content-Type": "application/json"}});')
+        page = entry('https://secure.chase.com/home', mime='text/html',
+                     text='<script type="application/json">{"addressLine1Verification":true}</script>')
+        self.har['log']['entries'] = [first, script, page]
+        outline = self.successful(self.run_tool())
+        self.assertEqual(outline['entries'][0]['path'], '/api/accounts')
+        self.assertEqual(outline['entries'][0]['response']['body']['fields'],
+                         [header_type(name, '<bool>') for name in names])
+        self.assertEqual([item['response']['body'] for item in outline['entries'][1:]],
+                         ['<omitted>', '<omitted>'])
 
     def test_templated_path_token_is_refused_if_it_slips_through(self):
         token = 'retained/marker'

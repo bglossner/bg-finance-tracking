@@ -44,7 +44,7 @@ The output drops literal query and body values, cookie names and values, authent
 
 Before writing, the tool checks retained strings, including header names, parameter names, JSON keys and OFX tags, for copies of collected input values. It collects header values, cookie names and values, query and form values, complete query strings, JSON scalar values, body text tokens, and URL path segments replaced by placeholders. It checks copies of eight or more characters, digit runs of four or more digits, and shorter credential parts in retained names and other structural fields.
 
-The check also looks for email addresses, dates, amounts, JWTs and token-like base64. It recognizes the tool's generated hints and buckets, conventional structural names, and exact first-party hostname and origin spellings. It still checks retained names and hosts for sensitive patterns and embedded values. A refusal writes no skeleton and reports only field positions.
+The check also looks for email addresses, dates, amounts, JWTs and token-like base64. It recognizes generated hints and buckets, conventional structural names, and common protocol declarations in web assets. Exact first-party hostnames and origins can appear in ordinary headers such as `Access-Control-Allow-Origin`. Cookie and authorization credentials still trigger a refusal if an origin contains them. A refusal writes no skeleton and reports only field positions.
 
 ## Review and delete
 

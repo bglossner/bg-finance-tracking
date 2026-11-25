@@ -29,7 +29,6 @@ HTTP_TOKEN = re.compile(r"[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}")
 NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_.:\-\[\]]{0,127}')
 HOST = re.compile(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?')
 PATH = re.compile(r'(?:/(?:[A-Za-z]{1,11}|<id>|<token>)?)+')
-PATH_PLACEHOLDER = re.compile(r'/<(?:id|token)>(?=/|$)')
 MIME = re.compile(r'(?:application|audio|example|font|image|message|model|multipart|text|video)'
                   r'/[a-z0-9][a-z0-9.+-]{0,63}')
 EXTENSION = re.compile(r'\.[a-z][a-z0-9]{0,5}\Z')
@@ -61,8 +60,11 @@ MONEY = re.compile(r'(?:\$|\bUSD)\s*[+-]?\s*(?:\d|[.,]\d)|'
 JWT = re.compile(r'eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}', re.I)
 BLOB = re.compile(r'[A-Za-z0-9+/_-]{16,}={0,2}')
 HEX_BLOB = re.compile(r'[a-fA-F0-9]{16,}')
-CAMEL_BOUNDARY = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
+CAMEL_BOUNDARY = re.compile(r'(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
 SHORT_NAME_WORDS = frozenset('a an as at by for id if in no of on or to ui uk us'.split())
+NAME_ACRONYMS = frozenset('ACH API APR APY ATM BIN CSP CSRF CSV CVV DNS HTML HTTP HTTPS ID IP IRA JSON JWT '
+                          'MFA MIME NFC OFX OTP PDF PIN QFX SAML SDK SSN SSO TIN TLS UI URI URL UTF UUID XML'.split())
+LONG_OFX_TAGS = frozenset({'creditcardmsgsrqv1', 'creditcardmsgsrsv1'})
 DIGITS = re.compile(r'\d{4,}')
 UUID = re.compile(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', re.I)
 HAR_TIME = re.compile(r'(?P<clock>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})'
@@ -80,6 +82,9 @@ DURATION_BOUNDS = (10, 100, 1000, 10000)
 COUNT_BOUNDS = (1, 5, 20, 100)
 LENGTH_BOUNDS = (8, 32, 128)
 TOKEN = re.compile(r'''[^\s"'=<>{}(),;]+''')
+WEB_PROPERTY_END = re.compile(r'''["']\s*:''')
+WEB_MIME_START = re.compile(r'''(?:(?<![\w-])type\s*=|["'](?:content-type|accept)["']\s*:)\s*\Z''', re.I)
+WEB_ROUTE_START = re.compile(r'(?:(?<![\w-])(?:href|src)\s*=|\b(?:fetch|Request)\s*\()\s*\Z', re.I)
 
 
 class InvalidInput(ValueError):
@@ -116,6 +121,7 @@ class InputValues:
     def __init__(self, document):
         self.raw = Counter(sensitive_scalars(document))
         self.values = set()
+        self.credentials = set()
         self.short_secrets = set()
 
     def remember(self, value):
@@ -129,13 +135,13 @@ class InputValues:
         if 0 < len(value) < 8:
             self.short_secrets.add(value.casefold())
         else:
-            self.remember(value)
+            self.credentials.update(sensitive_scalars(value))
 
     def forbidden_prefixes(self):
         prefixes = defaultdict(list)
-        for value in self.values | self.raw.keys():
-            if value in self.values or self.raw[value] > 0:
-                prefixes[value[:4]].append(value)
+        values = self.values | self.credentials | {value for value, count in self.raw.items() if count > 0}
+        for value in values:
+            prefixes[value[:4]].append(value)
         return prefixes
 
 
@@ -405,10 +411,17 @@ def multipart_names(text, raw_mime, sources):
         sources.remember(part.get_filename())
         payload = part.get_payload(decode=True)
         if payload is not None:
-            remember_text(payload.decode('utf-8', errors='replace'), sources)
+            if is_json_mime(part.get_content_type()) and payload.strip():
+                sources.remember(parse_json(payload))
+            else:
+                remember_opaque_text(payload.decode('utf-8', errors='replace'), sources)
         if part.defects:
             raise InvalidInput
     return names
+
+
+def is_json_mime(mime):
+    return mime == 'application/json' or mime.endswith('+json')
 
 
 def request_body(request, headers, sources):
@@ -426,7 +439,7 @@ def request_body(request, headers, sources):
     declared = declared_pairs(post.get('params', []), sources)
     if mime == FORM:
         body = pair_shape(encoded_pairs(text, sources) if text else declared)
-    elif mime == 'application/json' or mime.endswith('+json'):
+    elif is_json_mime(mime):
         body = parsed_json_shape(text, sources)
     elif mime == MULTIPART:
         names = multipart_names(text, raw_mime, sources) if text else [name for name, _ in declared]
@@ -448,14 +461,30 @@ def parsed_json_shape(text, sources):
     return json_shape(data)
 
 
-def remember_text(text, sources):
+def web_structure(text, match):
+    start, end = match.span()
+    token = match[0]
+    quote = text[start - 1] if start else ''
+    if quote not in ('"', "'") or text[end:end + 1] != quote:
+        return False
+    # Recognize local syntax without rescanning the prefix of a large web asset.
+    before = text[max(0, start - 64):start - 1]
+    if before.rstrip().endswith(('{', ',')) and WEB_PROPERTY_END.match(text, end):
+        return True
+    if MIME.fullmatch(token.lower()) and WEB_MIME_START.search(before):
+        return True
+    return PATH.fullmatch(token) is not None and WEB_ROUTE_START.search(before) is not None
+
+
+def remember_text(text, sources, *, web_asset=False):
     sources.remember(text)
     sources.remember(text.splitlines())
     for match in TOKEN.finditer(text):
-        sources.remember(match[0])
+        if not web_asset or not web_structure(text, match):
+            sources.remember(match[0])
 
 
-def remember_opaque_text(text, sources):
+def remember_opaque_text(text, sources, *, web_asset=False):
     if text.lstrip().startswith(('{', '[')):
         try:
             data = parse_json(text)
@@ -464,7 +493,7 @@ def remember_opaque_text(text, sources):
         else:
             sources.remember(data)
             return
-    remember_text(text, sources)
+    remember_text(text, sources, web_asset=web_asset)
 
 
 def xml_tags(text, sources):
@@ -546,7 +575,7 @@ def response_shape(response, sources):
     text = require(content.get('text', ''), str)
     encoding = require(content.get('encoding', ''), str)
     body = '<omitted>'
-    is_json = mime == 'application/json' or mime.endswith('+json')
+    is_json = is_json_mime(mime)
     is_xml = (mime in ('text/xml', 'application/xml') or mime.endswith('+xml')) and mime not in WEB_MIMES
     qfx_filename = extension in ('.ofx', '.qfx')
     opaque = mime in WEB_MIMES or mime.startswith(('audio/', 'font/', 'image/', 'video/'))
@@ -575,7 +604,7 @@ def response_shape(response, sources):
     elif text:
         if encoding == 'base64' and not mime.startswith(('audio/', 'font/', 'image/', 'video/')):
             text = base64.b64decode(text, validate=True).decode('utf-8', errors='replace')
-        remember_opaque_text(text, sources)
+        remember_opaque_text(text, sources, web_asset=mime in WEB_MIMES)
     result.update(status=status, mime=mime or '<omitted>', size_bucket=bucket(size, SIZE_BOUNDS),
                   disposition=disposition, body=body)
     return result
@@ -664,12 +693,9 @@ def self_check(output, sources):
             valid = field not in ('name', 'headers') or name_ok(value, field)
             if field == 'path':
                 valid = bool(PATH.fullmatch(value))
-                pieces = PATH_PLACEHOLDER.split(value)
             elif field == 'disposition' and (match := DISPOSITION.fullmatch(value)):
-                pieces = [match[1]]
-            else:
-                pieces = [value]
-            if not valid or any(suspect(piece, field) for piece in pieces):
+                value = match[1]
+            if not valid or suspect(value, field):
                 offenders.append(location)
         elif type(value) is not int or not NUMERIC_LOCATIONS.fullmatch(location):
             offenders.append(location)
@@ -685,7 +711,7 @@ def self_check(output, sources):
         if sources.short_secrets and copied_short_secret(lowered, field, sources.short_secrets):
             return True
         # Bank origins can also occur in headers, for example in CORS responses.
-        allowed_copies = ()
+        allowed_copies = ('/<token>',) if field == 'path' else ()
         if field == 'origin':
             scheme, _, host = lowered.partition('://')
             if scheme in ('http', 'https', 'ws', 'wss') and bank_host(host):
@@ -693,7 +719,7 @@ def self_check(output, sources):
         return any(lowered.startswith(source, index)
                    for index in range(len(lowered) - 3)
                    for source in forbidden.get(lowered[index:index + 4], ())
-                   if source not in allowed_copies)
+                   if source not in allowed_copies or source in sources.credentials)
 
     scan(output, '$', '')
     return sorted(set(offenders))
@@ -718,14 +744,15 @@ def copied_short_secret(value, field, secrets):
 
 
 def name_word(part):
-    # Alphabetic words, camelCase and short version suffixes are common in names.
-    letters = re.sub(r'\d{1,3}$', '', part)
-    if not letters or not letters.isalpha():
+    words = [re.sub(r'\d{1,3}$', '', word) for word in CAMEL_BOUNDARY.split(part)]
+    if not all(word.isalpha() for word in words):
         return False
-    if letters.islower() or letters.isupper():
-        return True
-    return all(len(word) >= 3 or word.isupper() or word.lower() in SHORT_NAME_WORDS
-               for word in CAMEL_BOUNDARY.split(letters))
+    if len(words) == 1:
+        word, = words
+        return len(word) < 16 and (word.islower() or word.isupper() or
+                                  len(word) >= 3 or word.lower() in SHORT_NAME_WORDS)
+    return all(word in NAME_ACRONYMS if word.isupper()
+               else len(word) >= 3 or word.lower() in SHORT_NAME_WORDS for word in words)
 
 
 def blob_like(value, field):
@@ -742,7 +769,7 @@ def blob_like(value, field):
     for piece in pieces:
         for match in BLOB.finditer(piece):
             candidate = match[0].strip('/')
-            if len(candidate) < 16:
+            if len(candidate) < 16 or (field == 'body' and candidate.casefold() in LONG_OFX_TAGS):
                 continue
             if HEX_BLOB.search(candidate) or not (structural and all(
                     name_word(part) for part in re.split(r'[-_]', candidate))):

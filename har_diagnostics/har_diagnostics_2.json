@@ -1,0 +1,532 @@
+{
+  "buckets": [
+    {
+      "count": 6,
+      "examples": [
+        {
+          "field_path": "$.entries[268].request.body[1].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "digit",
+              "dot"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[268].request.body[7].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot"
+            ],
+            "length_bucket": "5-8"
+          }
+        },
+        {
+          "field_path": "$.entries[268].request.body[17].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot"
+            ],
+            "length_bucket": "5-8"
+          }
+        },
+        {
+          "field_path": "$.entries[268].request.body[19].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot"
+            ],
+            "length_bucket": "5-8"
+          }
+        },
+        {
+          "field_path": "$.entries[268].request.body[61].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot"
+            ],
+            "length_bucket": "9-16"
+          }
+        }
+      ],
+      "field_kind": "form-name",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 6
+      }
+    },
+    {
+      "count": 1131,
+      "examples": [
+        {
+          "field_path": "$.entries[55].response.body.fields[0].type.fields[2].type.fields[0].name",
+          "shape": {
+            "classes": [
+              "lower"
+            ],
+            "length_bucket": "0-4"
+          }
+        },
+        {
+          "field_path": "$.entries[55].response.body.fields[0].type.fields[6].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[55].response.body.fields[0].type.fields[22].type.fields[0].name",
+          "shape": {
+            "classes": [
+              "lower"
+            ],
+            "length_bucket": "5-8"
+          }
+        },
+        {
+          "field_path": "$.entries[55].response.body.fields[0].type.fields[24].type.fields[0].name",
+          "shape": {
+            "classes": [
+              "lower"
+            ],
+            "length_bucket": "0-4"
+          }
+        },
+        {
+          "field_path": "$.entries[56].response.body.fields[0].type.fields[0].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "underscore"
+            ],
+            "length_bucket": "17-32"
+          }
+        }
+      ],
+      "field_kind": "json-key",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 816,
+        "har-metadata": 4,
+        "json-scalar": 304,
+        "url": 17
+      }
+    },
+    {
+      "count": 111,
+      "examples": [
+        {
+          "field_path": "$.entries[0].request.content_type",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[0].request.accept",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[0].request.mime",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[12].response.mime",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[13].response.mime",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "5-8"
+          }
+        }
+      ],
+      "field_kind": "mime",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 111
+      }
+    },
+    {
+      "count": 275,
+      "examples": [
+        {
+          "field_path": "$.entries[0].origin",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[1].origin",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[2].origin",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[3].origin",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[4].origin",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        }
+      ],
+      "field_kind": "origin",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 275,
+        "json-scalar": 275
+      }
+    },
+    {
+      "count": 145,
+      "examples": [
+        {
+          "field_path": "$.entries[2].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "digit",
+              "slash"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.entries[3].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[5].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.entries[13].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "65-128"
+          }
+        },
+        {
+          "field_path": "$.entries[14].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "33-64"
+          }
+        }
+      ],
+      "field_kind": "path",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 21,
+        "json-scalar": 129
+      }
+    },
+    {
+      "count": 14,
+      "examples": [
+        {
+          "field_path": "$.path_counts[8].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.path_counts[9].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.path_counts[11].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "digit",
+              "slash"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.path_counts[26].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.path_counts[29].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "17-32"
+          }
+        }
+      ],
+      "field_kind": "path_counts.path",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 5,
+        "json-scalar": 13
+      }
+    },
+    {
+      "count": 1,
+      "examples": [
+        {
+          "field_path": "$.entries[282].query[1].name",
+          "shape": {
+            "classes": [
+              "lower"
+            ],
+            "length_bucket": "9-16"
+          }
+        }
+      ],
+      "field_kind": "query-name",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 1
+      }
+    },
+    {
+      "count": 891,
+      "examples": [
+        {
+          "field_path": "$.entries[0].request.headers[7]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[0].request.headers[8]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[0].request.headers[9]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[0].request.headers[20]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[0].request.headers[21]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "17-32"
+          }
+        }
+      ],
+      "field_kind": "request.header-name",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 891,
+        "header-value": 39
+      }
+    },
+    {
+      "count": 1060,
+      "examples": [
+        {
+          "field_path": "$.entries[0].response.headers[2]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[0].response.headers[8]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[1].response.headers[4]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[1].response.headers[10]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[2].response.headers[6]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "9-16"
+          }
+        }
+      ],
+      "field_kind": "response.header-name",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 1052,
+        "har-metadata": 8,
+        "header-value": 503
+      }
+    }
+  ],
+  "entry_count": 287,
+  "offender_count": 3634,
+  "python_version": "3.12.3",
+  "status": "complete",
+  "tool_version": "1.3.0"
+}

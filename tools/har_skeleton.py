@@ -10,6 +10,7 @@ from email.message import Message
 from email.parser import BytesParser
 from email.utils import collapse_rfc2231_value
 import html
+from html.parser import HTMLParser
 from ipaddress import IPv6Address
 import json
 import math
@@ -62,8 +63,9 @@ BLOB = re.compile(r'[A-Za-z0-9+/_-]{16,}={0,2}')
 HEX_BLOB = re.compile(r'[a-fA-F0-9]{16,}')
 CAMEL_BOUNDARY = re.compile(r'(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
 SHORT_NAME_WORDS = frozenset('a an as at by for id if in no of on or to ui uk us'.split())
-NAME_ACRONYMS = frozenset('ACH API APR APY ATM BIN CSP CSRF CSV CVV DNS HTML HTTP HTTPS ID IP IRA JSON JWT '
-                          'MFA MIME NFC OFX OTP PDF PIN QFX SAML SDK SSN SSO TIN TLS UI URI URL UTF UUID XML'.split())
+NAME_ACRONYMS = frozenset('ABA ACH API APR APY ATM BIC BIN CSP CSRF CSV CVV DNS HTML HTTP HTTPS IBAN ID IP '
+                          'IRA ISO JSON JWT MFA MIME NFC OFX OTP PAN PCI PDF PIN QFX SAML SDK SSN SSO SWIFT TIN '
+                          'TLS UI URI URL UTF UUID XML'.split())
 LONG_OFX_TAGS = frozenset({'creditcardmsgsrqv1', 'creditcardmsgsrsv1'})
 DIGITS = re.compile(r'\d{4,}')
 UUID = re.compile(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', re.I)
@@ -82,9 +84,14 @@ DURATION_BOUNDS = (10, 100, 1000, 10000)
 COUNT_BOUNDS = (1, 5, 20, 100)
 LENGTH_BOUNDS = (8, 32, 128)
 TOKEN = re.compile(r'''[^\s"'=<>{}(),;]+''')
-WEB_PROPERTY_END = re.compile(r'''["']\s*:''')
-WEB_MIME_START = re.compile(r'''(?:(?<![\w-])type\s*=|["'](?:content-type|accept)["']\s*:)\s*\Z''', re.I)
-WEB_ROUTE_START = re.compile(r'(?:(?<![\w-])(?:href|src)\s*=|\b(?:fetch|Request)\s*\()\s*\Z', re.I)
+WEB_LITERAL = re.compile(r'''(?P<comment>/\*.*?\*/|//[^\r\n]*)|'''
+                         r'''(?P<quoted>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)''', re.S)
+WEB_PROPERTY_END = re.compile(r'\s*:')
+WEB_MIME_START = re.compile(r'''["'](?:content-type|accept)["']\s*:\s*\Z''', re.I)
+WEB_ROUTE_START = re.compile(r'\b(?:fetch|Request|url)\s*\(\s*\Z', re.I)
+HTML_MIME_TAGS = frozenset('a embed link object script source style'.split())
+HTML_ROUTE_ATTRIBUTES = {'href': frozenset('a area base link'.split()),
+                         'src': frozenset('audio embed iframe img input script source track video'.split())}
 
 
 class InvalidInput(ValueError):
@@ -121,7 +128,6 @@ class InputValues:
     def __init__(self, document):
         self.raw = Counter(sensitive_scalars(document))
         self.values = set()
-        self.credentials = set()
         self.short_secrets = set()
 
     def remember(self, value):
@@ -135,11 +141,11 @@ class InputValues:
         if 0 < len(value) < 8:
             self.short_secrets.add(value.casefold())
         else:
-            self.credentials.update(sensitive_scalars(value))
+            self.remember(value)
 
     def forbidden_prefixes(self):
         prefixes = defaultdict(list)
-        values = self.values | self.credentials | {value for value, count in self.raw.items() if count > 0}
+        values = self.values | {value for value, count in self.raw.items() if count > 0}
         for value in values:
             prefixes[value[:4]].append(value)
         return prefixes
@@ -253,12 +259,17 @@ def accept_type(value):
     return candidate if MIME.fullmatch(candidate) or candidate == '*/*' else ''
 
 
-def encoded_pairs(text, sources):
+def encoded_pairs(text, sources, *, from_post=False):
     if re.search(r'%(?![0-9a-fA-F]{2})', text):
         raise InvalidInput
     pairs = parse_qsl(text, keep_blank_values=True, errors='strict')
     for _, value in pairs:
         sources.remember(value)
+    if '=' in text or '&' in text:
+        sources.remember([text, unquote_plus(text, errors='strict')])
+    elif from_post:
+        # A bare form parameter contains only a name.
+        sources.structural_occurrence(text)
     return pairs
 
 
@@ -279,7 +290,13 @@ def pair_shape(pairs):
 
 
 def bank_host(host):
-    return any(host == bank or host.endswith('.' + bank) for bank in BANK_DOMAINS)
+    return (any(host == bank or host.endswith('.' + bank) for bank in BANK_DOMAINS)
+            and all(HOST.fullmatch(label) for label in host.split('.')))
+
+
+def bank_origin(value):
+    scheme, _, host = value.strip().lower().partition('://')
+    return scheme in ('http', 'https', 'ws', 'wss') and bank_host(host)
 
 
 def url_shape(raw, include_host, sources):
@@ -322,7 +339,6 @@ def url_shape(raw, include_host, sources):
             path.append('<id>' if is_id else '<token>')
     target = url.path or '/'
     if url.query:
-        sources.remember([url.query, unquote_plus(url.query, errors='strict')])
         target += '?' + url.query
     return (authority if allowed else '<third-party>', '/'.join(path),
             encoded_pairs(url.query, sources), authority, target)
@@ -369,7 +385,9 @@ def header_shape(side, sources, *, response=False, authority='', target=''):
             credentials = value.split(maxsplit=1)
             if len(credentials) == 2:
                 sources.remember_secret(credentials[1].strip())
-        if not response and authority and (
+        if name in ('origin', 'referer', 'access-control-allow-origin') and bank_origin(value):
+            sources.structural_occurrence(value)
+        elif not response and authority and (
                 (name in ('host', ':authority') and value.lower() == authority.split('://')[1])
                 or (name in ('origin', 'referer') and value.lower() == authority)
                 or (name == ':path' and value == target)):
@@ -395,6 +413,22 @@ def first_header(values, name):
     return values[name][0] if name in values else ''
 
 
+def remember_multipart_payload(part, sources):
+    sources.remember(part.get_filename())
+    if part.is_multipart():
+        for child in part.iter_parts():
+            remember_multipart_payload(child, sources)
+    else:
+        payload = part.get_payload(decode=True)
+        if payload:
+            if is_json_mime(part.get_content_type()) and payload.strip():
+                sources.remember(parse_json(payload))
+            else:
+                remember_opaque_text(payload.decode('utf-8', errors='replace'), sources)
+    if part.defects:
+        raise InvalidInput
+
+
 def multipart_names(text, raw_mime, sources):
     if '\r' in raw_mime or '\n' in raw_mime:
         raise InvalidInput
@@ -408,15 +442,7 @@ def multipart_names(text, raw_mime, sources):
         if part.defects or part.get_content_disposition() != 'form-data' or not isinstance(name, str):
             raise InvalidInput
         names.append(name)
-        sources.remember(part.get_filename())
-        payload = part.get_payload(decode=True)
-        if payload is not None:
-            if is_json_mime(part.get_content_type()) and payload.strip():
-                sources.remember(parse_json(payload))
-            else:
-                remember_opaque_text(payload.decode('utf-8', errors='replace'), sources)
-        if part.defects:
-            raise InvalidInput
+        remember_multipart_payload(part, sources)
     return names
 
 
@@ -438,7 +464,7 @@ def request_body(request, headers, sources):
     text = require(post.get('text', ''), str)
     declared = declared_pairs(post.get('params', []), sources)
     if mime == FORM:
-        body = pair_shape(encoded_pairs(text, sources) if text else declared)
+        body = pair_shape(encoded_pairs(text, sources, from_post=True) if text else declared)
     elif is_json_mime(mime):
         body = parsed_json_shape(text, sources)
     elif mime == MULTIPART:
@@ -461,27 +487,43 @@ def parsed_json_shape(text, sources):
     return json_shape(data)
 
 
-def web_structure(text, match):
+def web_structure(text, match, literal, sources):
     start, end = match.span()
-    token = match[0]
-    quote = text[start - 1] if start else ''
-    if quote not in ('"', "'") or text[end:end + 1] != quote:
-        return False
     # Recognize local syntax without rescanning the prefix of a large web asset.
-    before = text[max(0, start - 64):start - 1]
+    before = text[max(0, start - 64):start]
+    if mime_type(literal) and WEB_MIME_START.search(before):
+        if ';' in literal:
+            mime_header(literal, 'Content-Type', sources)
+        return True
     if before.rstrip().endswith(('{', ',')) and WEB_PROPERTY_END.match(text, end):
         return True
-    if MIME.fullmatch(token.lower()) and WEB_MIME_START.search(before):
-        return True
-    return PATH.fullmatch(token) is not None and WEB_ROUTE_START.search(before) is not None
+    return PATH.fullmatch(literal) is not None and WEB_ROUTE_START.search(before) is not None
+
+
+def remember_tokens(text, sources):
+    for match in TOKEN.finditer(text):
+        sources.remember(match[0])
 
 
 def remember_text(text, sources, *, web_asset=False):
     sources.remember(text)
     sources.remember(text.splitlines())
-    for match in TOKEN.finditer(text):
-        if not web_asset or not web_structure(text, match):
-            sources.remember(match[0])
+    if not web_asset:
+        remember_tokens(text, sources)
+        return
+    end = 0
+    for match in WEB_LITERAL.finditer(text):
+        remember_tokens(text[end:match.start()], sources)
+        quoted = match['quoted']
+        if quoted:
+            literal = quoted[1:-1]
+            if not web_structure(text, match, literal, sources):
+                sources.remember(literal)
+                remember_tokens(literal, sources)
+        else:
+            remember_tokens(match[0], sources)
+        end = match.end()
+    remember_tokens(text[end:], sources)
 
 
 def remember_opaque_text(text, sources, *, web_asset=False):
@@ -494,6 +536,39 @@ def remember_opaque_text(text, sources, *, web_asset=False):
             sources.remember(data)
             return
     remember_text(text, sources, web_asset=web_asset)
+
+
+class HtmlValues(HTMLParser):
+    def __init__(self, sources):
+        super().__init__()
+        self.sources = sources
+        self.script_mime = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'script':
+            self.script_mime = mime_type(dict(attrs).get('type') or '')
+        for name, value in attrs:
+            if not value:
+                continue
+            if name == 'type' and tag in HTML_MIME_TAGS and mime_type(value):
+                if ';' in value:
+                    mime_header(value, 'Content-Type', self.sources)
+            elif tag not in HTML_ROUTE_ATTRIBUTES.get(name, ()) or not PATH.fullmatch(value):
+                remember_text(value, self.sources)
+
+    def handle_endtag(self, tag):
+        if tag == 'script':
+            self.script_mime = None
+
+    def handle_data(self, data):
+        if self.script_mime is not None and is_json_mime(self.script_mime):
+            if data.strip():
+                self.sources.remember(parse_json(data))
+        else:
+            remember_text(data, self.sources, web_asset=self.script_mime is not None)
+
+    def handle_comment(self, data):
+        remember_text(data, self.sources)
 
 
 def xml_tags(text, sources):
@@ -604,7 +679,12 @@ def response_shape(response, sources):
     elif text:
         if encoding == 'base64' and not mime.startswith(('audio/', 'font/', 'image/', 'video/')):
             text = base64.b64decode(text, validate=True).decode('utf-8', errors='replace')
-        remember_opaque_text(text, sources, web_asset=mime in WEB_MIMES)
+        if mime in ('text/html', 'application/xhtml+xml'):
+            parser = HtmlValues(sources)
+            parser.feed(text)
+            parser.close()
+        else:
+            remember_opaque_text(text, sources, web_asset=mime in WEB_MIMES)
     result.update(status=status, mime=mime or '<omitted>', size_bucket=bucket(size, SIZE_BOUNDS),
                   disposition=disposition, body=body)
     return result
@@ -710,16 +790,11 @@ def self_check(output, sources):
             return True
         if sources.short_secrets and copied_short_secret(lowered, field, sources.short_secrets):
             return True
-        # Bank origins can also occur in headers, for example in CORS responses.
         allowed_copies = ('/<token>',) if field == 'path' else ()
-        if field == 'origin':
-            scheme, _, host = lowered.partition('://')
-            if scheme in ('http', 'https', 'ws', 'wss') and bank_host(host):
-                allowed_copies = (lowered, host)
         return any(lowered.startswith(source, index)
                    for index in range(len(lowered) - 3)
                    for source in forbidden.get(lowered[index:index + 4], ())
-                   if source not in allowed_copies or source in sources.credentials)
+                   if source not in allowed_copies)
 
     scan(output, '$', '')
     return sorted(set(offenders))
@@ -761,7 +836,9 @@ def blob_like(value, field):
         value = '/'.join('.' if name_word(part) and not HEX_BLOB.search(part) else part
                          for part in value.split('/'))
         pieces = value.split('.')
-    elif field == 'origin' or field in ('accept', 'content_type', 'mime'):
+    elif field in ('accept', 'content_type', 'mime') and MIME.fullmatch(value):
+        pieces = value.removesuffix('+json').removesuffix('+xml').split('/')
+    elif field == 'origin':
         pieces = value.split('/')
     else:
         pieces = [value]

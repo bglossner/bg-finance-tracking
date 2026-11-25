@@ -292,7 +292,8 @@ class HarSkeletonTests(unittest.TestCase):
 
     def test_value_echoed_into_a_json_key_is_refused(self):
         secret = 'privateMarker'
-        for source in ('header', 'query', 'form', 'json', 'body', 'web body', 'postData', 'multipart'):
+        for source in ('header', 'query', 'form', 'json', 'body', 'web body', 'embedded JSON',
+                       'postData', 'multipart', 'nested multipart'):
             with self.subTest(source=source):
                 accounts = entry('https://secure.chase.com/api/accounts',
                                  text=json.dumps({f'{secret}Copy': True}))
@@ -312,14 +313,21 @@ class HarSkeletonTests(unittest.TestCase):
                     content.update(mimeType='text/plain', text=f'hello {secret} world')
                 elif source == 'web body':
                     content.update(mimeType='application/javascript', text=f'let variable = "{secret}";')
+                elif source == 'embedded JSON':
+                    content.update(mimeType='text/html', text='<script type=application/json>'
+                                   r'{"alias":"private\u004darker"}' '</script>')
                 elif source == 'postData':
                     request['postData'] = {'mimeType': 'text/plain', 'text': f'hello {secret} world'}
                 else:
+                    payload = ('Content-Type: application/json\r\n\r\n'
+                               r'{"alias":"private\u004darker"}' '\r\n')
+                    if source == 'nested multipart':
+                        payload = ('Content-Type: multipart/mixed; boundary=innerBoundary\r\n\r\n'
+                                   f'--innerBoundary\r\n{payload}--innerBoundary--\r\n')
                     request['postData'] = {
                         'mimeType': 'multipart/form-data; boundary=pretendBoundary',
                         'text': '--pretendBoundary\r\nContent-Disposition: form-data; name="details"\r\n'
-                                'Content-Type: application/json\r\n\r\n'
-                                r'{"alias":"private\u004darker"}' '\r\n--pretendBoundary--\r\n',
+                                f'{payload}--pretendBoundary--\r\n',
                     }
                 self.har['log']['entries'] = [accounts, source_entry]
                 result = self.run_tool('-o', self.destination)
@@ -347,12 +355,17 @@ class HarSkeletonTests(unittest.TestCase):
 
     def test_exact_first_party_host_cannot_exempt_a_credential(self):
         host = 'secure.chase.com'
-        for credential in (header('Cookie', f'exampleSession={host}'),
-                           header('Authorization', f'Bearer https://{host}')):
-            with self.subTest(source=credential['name']):
-                self.har['log']['entries'] = [
-                    entry(f'https://{host}/api', request_headers=[credential]),
-                ]
+        origin = f'https://{host}'
+        for name, value in (('Cookie', f'exampleSession={host}'), ('Authorization', f'Bearer {origin}'),
+                            ('X-Api-Key', host), ('X-JPMC-CSRF-Token', origin), ('query', origin)):
+            with self.subTest(source=name):
+                first = entry(f'{origin}/api',
+                              response_headers=[header('Access-Control-Allow-Origin', origin)])
+                if name == 'query':
+                    first['request']['url'] += f'?access_token={quote(value, safe="")}'
+                else:
+                    first['request']['headers'] = [header(name, value)]
+                self.har['log']['entries'] = [first]
                 self.assert_refused(self.run_tool('-o', self.destination), ['$.entries[0].origin'], host)
 
     def test_base64url_tokens_are_refused_in_structural_names(self):
@@ -365,19 +378,46 @@ class HarSkeletonTests(unittest.TestCase):
                             token, token.lower())
 
     def test_web_asset_protocol_literals_and_versioned_names_are_retained(self):
-        names = ['addressLine1Verification', 'fido2AuthenticationEnabled', 'oauth2ClientConfiguration']
-        first = entry('https://secure.chase.com/api/accounts', text=json.dumps(dict.fromkeys(names, True)))
+        names = ['addressLine1Verification', 'fido2AuthenticationEnabled', 'maskedPANExpirationDate',
+                 'oauth2ClientConfiguration', 'paymentIBANAccount']
+        first = entry('https://secure.chase.com/api/accounts', text=json.dumps(dict.fromkeys(names, True)),
+                      request_headers=[header('Accept', 'application/merge-patch+json')])
         script = entry('https://assets.example.test/app/script', mime='application/javascript',
-                       text='fetch("/api/accounts", {headers: {"Content-Type": "application/json"}});')
+                       text='fetch("/api/accounts", {headers: {"Content-Type": "application/json; charset=UTF-8"}});')
         page = entry('https://secure.chase.com/home', mime='text/html',
-                     text='<script type="application/json">{"addressLine1Verification":true}</script>')
-        self.har['log']['entries'] = [first, script, page]
+                     text='<a href=/api/accounts>Open</a>'
+                          '<script type=application/json>{"addressLine1Verification":true}</script>')
+        css = entry('https://assets.example.test/app/theme', mime='text/css',
+                    text='div { background-image: url("/api/accounts"); }')
+        graphql = entry('https://secure.chase.com/api/graphql', mime='application/graphql-response+json')
+        self.har['log']['entries'] = [first, script, page, css, graphql]
         outline = self.successful(self.run_tool())
         self.assertEqual(outline['entries'][0]['path'], '/api/accounts')
+        self.assertEqual(outline['entries'][0]['request']['accept'], 'application/merge-patch+json')
+        self.assertEqual(outline['entries'][4]['response']['mime'], 'application/graphql-response+json')
         self.assertEqual(outline['entries'][0]['response']['body']['fields'],
                          [header_type(name, '<bool>') for name in names])
         self.assertEqual([item['response']['body'] for item in outline['entries'][1:]],
-                         ['<omitted>', '<omitted>'])
+                         ['<omitted>'] * 4)
+
+    def test_web_source_code_inside_a_string_is_data(self):
+        first = entry('https://secure.chase.com/private/marker', mime='application/privatemarker')
+        script = entry('https://assets.example.test/script', mime='application/javascript',
+                       text='''const first = 'type="application/privatemarker"';'''
+                            '''const second = 'fetch("/private/marker")';''')
+        self.har['log']['entries'] = [first, script]
+        self.assert_refused(self.run_tool('-o', self.destination),
+                            ['$.entries[0].path', '$.entries[0].response.mime', '$.path_counts[0].path'],
+                            '/private/marker', 'application/privatemarker')
+
+    def test_bare_query_and_form_parameter_names_are_retained(self):
+        self.har['log']['entries'] = [
+            entry('https://secure.chase.com/api?includeDetails', method='POST',
+                  post={'mimeType': 'application/x-www-form-urlencoded', 'text': 'downloadStatement'}),
+        ]
+        result = self.successful(self.run_tool())['entries'][0]
+        self.assertEqual(result['query'], [header_type('includeDetails', '<str:empty>')])
+        self.assertEqual(result['request']['body'], [header_type('downloadStatement', '<str:empty>')])
 
     def test_templated_path_token_is_refused_if_it_slips_through(self):
         token = 'retained/marker'

@@ -3,6 +3,7 @@
 import base64
 from contextlib import redirect_stderr, redirect_stdout
 import copy
+import itertools
 from io import StringIO
 import json
 import os
@@ -180,6 +181,32 @@ def chrome_http2_har():
     return capture
 
 
+def bundle_config_har():
+    origin = 'https://asset.chase.com'
+    route = '/svc/config/accounts'
+    header_name = 'x-client-context'
+    mime = 'application/json'
+    repeated_names = ['availableAccountDetails', 'configurationLabel', 'response-header-name']
+    nested = {'pastDepthLimit': True}
+    for i in range(9):
+        nested = {f'level{i}': nested}
+    config = {name: name for name in repeated_names}
+    config.update({f'{route}/variant{i}': True for i in range(300)})
+    config.update({'01234567': True, '09876543': None, 'v8ss5qb9km2zde6p': True,
+                   EMAIL: True, 'nestedConfiguration': nested,
+                   'wideConfiguration': dict.fromkeys(
+                       (f'field{letters}' for letters in itertools.islice(
+                           map(''.join, itertools.product('abcdefghijklmnopqrstuvwxyz', repeat=2)), 300)), True),
+                   'publicOrigin': origin, 'publicRoute': route})
+    bank = entry(origin + route, text=json.dumps(config),
+                 request_headers=[header(header_name, 'example'), header('Accept', mime)])
+    names = [header_name, 'content-type', mime, origin, route, *repeated_names]
+    script = entry('https://static.chase.com/bundle', mime='application/javascript',
+                   text='const protocolCatalog = ' + json.dumps(names * 1500) + ';')
+    script['_resourceType'] = 'script'
+    return {'log': {'entries': [script, bank]}}
+
+
 class HarSkeletonTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -319,6 +346,76 @@ class HarSkeletonTests(unittest.TestCase):
         self.assertEqual(accounts['query'], [header_type('includeAccountDetails', '<bool>')])
         self.assertIn('BANKACCTFROM', download['response']['body'])
 
+    def test_bundle_and_large_config_keep_bounded_public_shape(self):
+        self.har = bundle_config_har()
+        result = self.run_tool()
+        outline = self.successful(result)
+        script, config = outline['entries']
+        self.assertEqual(script['response']['body'], '<omitted>')
+        self.assertEqual(config['origin'], 'https://asset.chase.com')
+        self.assertEqual(config['path'], '/svc/config/accounts')
+        self.assertIn('x-client-context', config['request']['headers'])
+        fields = {field['name']: field for field in config['response']['body']['fields']}
+        for key in ('availableAccountDetails', 'configurationLabel', 'response-header-name',
+                    '<key:route>', '<num-key>', '<key:opaque>', '<key:email>'):
+            self.assertIn(key, fields)
+        self.assertEqual(fields['<num-key>']['count_bucket'], 'le-5')
+        self.assertEqual(fields['<key:route>']['count_bucket'], 'gt-100')
+        wide = fields['wideConfiguration']['type']['fields']
+        self.assertEqual(len(wide), 41)
+        self.assertEqual(wide[-1], {'name': '<more-keys>', 'count_bucket': 'gt-100'})
+        self.assertIn('<max-depth>', json.dumps(fields['nestedConfiguration']))
+        for secret in ('01234567', '09876543', 'v8ss5qb9km2zde6p', EMAIL, 'pastDepthLimit', 'variant0'):
+            self.assertNotIn(secret, result.stdout)
+
+    def test_credential_values_survive_selective_collection_and_shape_caps(self):
+        word = 'accounts'
+        token = 'privateMarker'
+        hidden = {'marker': ACCOUNT}
+        for _ in range(12):
+            hidden = {'child': hidden}
+        script = entry('https://static.chase.com/static/script', mime='text/javascript',
+                       text=f'const demo = "{token}";')
+        target = entry('https://asset.chase.com/api', text=json.dumps({f'{token}Copy': True, word: True}),
+                       request_headers=[header('Cookie', f'demoSession={word}')])
+        index = entry('https://secure.chase.com/index',
+                      text=json.dumps({'omittedBranch': hidden, 'displayLabel': token}))
+        self.har['log']['entries'] = [script, target, index]
+        module = runpy.run_path(str(SCRIPT))
+        sources = module['InputValues'](self.har, diagnose=True)
+        outline = module['make_skeleton'](self.har, None, sources)
+        self.assertIn(ACCOUNT, sources.values)
+        self.assertNotIn(ACCOUNT, json.dumps(outline))
+        self.assertEqual(sources.source_kinds(token.casefold(), False), {'json-scalar'})
+        self.assert_refused(self.run_tool('-o', self.destination),
+                            ['$.entries[1].response.body.fields[0].name',
+                             '$.entries[1].response.body.fields[1].name'], word, token, ACCOUNT)
+
+    def test_auth_form_values_remain_sensitive_even_when_identifier_like(self):
+        marker = 'clientLabel'
+        lookup = entry('https://secure.chase.com/auth/login', method='POST',
+                       post={'mimeType': 'application/x-www-form-urlencoded', 'text': f'input={marker}'})
+        echo = entry('https://secure.chase.com/api', text=json.dumps({f'{marker}Copy': True}))
+        self.har['log']['entries'] = [lookup, echo]
+        self.assert_refused(self.run_tool('-o', self.destination),
+                            ['$.entries[1].response.body.fields[0].name'], marker)
+
+    def test_form_query_and_tag_names_are_templated(self):
+        route = 'account/transaction'
+        tag = 'ACCOUNTREF7429TOKEN'
+        first = entry('https://secure.chase.com/api?'+quote(route, safe='')+'=fake', method='POST',
+                      post={'mimeType': 'application/x-www-form-urlencoded',
+                            'text': quote(EMAIL, safe='') + '=fake'},
+                      mime='application/xml', text=f'<report><{tag}/></report>')
+        self.har['log']['entries'] = [first]
+        result = self.run_tool()
+        outline = self.successful(result)['entries'][0]
+        self.assertEqual(outline['query'], [{'name': '<key:route>', 'count_bucket': 'le-1'}])
+        self.assertEqual(outline['request']['body'], [{'name': '<key:email>', 'count_bucket': 'le-1'}])
+        self.assertEqual(outline['response']['body'], ['report', '<tag:opaque>'])
+        for value in (route, tag, EMAIL):
+            self.assertNotIn(value, result.stdout)
+
     def test_http2_path_only_query_value_is_still_sensitive(self):
         token = 'privateMarker'
         first = entry('https://asset.chase.com/api/accounts',
@@ -382,9 +479,12 @@ class HarSkeletonTests(unittest.TestCase):
                               request_headers=[header(f'X-{name}', 'fake')],
                               text=json.dumps({name: True}))
                 self.har['log']['entries'] = [first]
-                self.assert_refused(self.run_tool('-o', self.destination),
-                                    ['$.entries[0].request.headers[0]',
-                                     '$.entries[0].response.body.fields[0].name'], name, name.lower())
+                result = self.run_tool()
+                outline = self.successful(result)['entries'][0]
+                self.assertEqual(outline['request']['headers'], ['<key:opaque>'])
+                self.assertEqual(outline['response']['body']['fields'],
+                                 [{'name': '<key:opaque>', 'count_bucket': 'le-1'}])
+                self.assertNotIn(name.lower(), result.stdout.lower())
         self.har['log']['entries'] = [entry(f'https://{token}.chase.com/api', mime=f'text/{token}')]
         self.assert_refused(self.run_tool('-o', self.destination),
                             ['$.entries[0].origin', '$.entries[0].response.mime'], token)
@@ -474,8 +574,8 @@ class HarSkeletonTests(unittest.TestCase):
         origin = 'https://portal.jpmorgan.com'
         mime = 'application/privatehint'
         sources = entry(f'https://secure.chase.com/collect?selection=private%4Darker#{marker}',
-                        request_headers=[header('X-Source', marker), header('X-Route', 'safemarker'),
-                                         header('X-Origin-Value', origin), header('X-Mime-Value', mime)],
+                        request_headers=[header('X-Source', marker), header('X-Route-Token', 'safemarker'),
+                                         header('X-Origin-Token', origin), header('X-Mime-Token', mime)],
                         text=json.dumps({'capturedValue': marker}),
                         post={'mimeType': 'application/x-www-form-urlencoded',
                               'text': 'selection=private%4Darker'})
@@ -502,19 +602,13 @@ class HarSkeletonTests(unittest.TestCase):
         self.assertEqual(copied['source_kinds'], dict.fromkeys(
             ('body-token', 'cookie', 'form-value', 'header-value', 'json-scalar', 'query-value', 'url'), 7))
         self.assertEqual(copied['examples'], [
-            {'field_path': f'$.entries[{i}].response.body.fields[3].name',
+            {'field_path': f'$.entries[{i}].response.body.fields[0].name',
              'shape': {'length_bucket': '17-32', 'classes': ['lower', 'upper']}}
             for i in range(5)
         ])
         for kind, count in (('query-name', 7), ('response.header-name', 7), ('path', 7),
                             ('path_counts.path', 1), ('origin', 1), ('mime', 1)):
             self.assertEqual(buckets['copied-input-value', kind]['count'], count)
-        self.assertEqual(buckets['email', 'request.header-name']['count'], 7)
-        self.assertEqual(buckets['digit-run', 'json-key']['count'], 14)
-        self.assertEqual(buckets['date', 'json-key']['count'], 7)
-        self.assertEqual(buckets['amount', 'ofx-tag']['count'], 1)
-        self.assertEqual(buckets['jwt', 'json-key']['count'], 7)
-        self.assertIn(('base64-like', 'json-key'), buckets)
         self.assertLessEqual(max(map(lambda row: len(row['examples']), report['buckets'])), 5)
         for text in (marker, 'privateMark', 'arkerCopy', origin, mime, 'safemarker', EMAIL,
                      JWT, 'account0742', '0742', DATES[0], '22.50', 'TRN22', 'shortfake',
@@ -525,7 +619,7 @@ class HarSkeletonTests(unittest.TestCase):
         reports = []
         for name in ('privateMarker', 'anotherSecret'):
             first = entry('https://secure.chase.com/api', text=json.dumps({f'{name}Copy': True}),
-                          request_headers=[header('X-Value', name)])
+                          request_headers=[header('X-Token', name)])
             self.har['log']['entries'] = [first]
             stdout, _ = self.diagnose()
             self.assertNotIn(name.casefold(), stdout.casefold())
@@ -547,19 +641,23 @@ class HarSkeletonTests(unittest.TestCase):
 
     def test_diagnose_separates_short_credential_and_substring_sources(self):
         number = '7042'
-        first = entry('https://secure.chase.com/api', text=json.dumps({f'account{number}': True}),
-                      request_headers=[header('Cookie', f'syntheticSession={number}'),
-                                       header('X-Fake-Account', number)],
-                      response_headers=[header(number, 'fake')])
-        self.har['log']['entries'] = [first]
-        stdout, report = self.diagnose()
-        self.assertNotIn(number, stdout)
-        copied = {bucket['field_kind']: bucket['source_kinds'] for bucket in report['buckets']
+        module = runpy.run_path(str(SCRIPT))
+        sources = module['InputValues']({}, diagnose=True)
+        sources.remember_secret(number, 'cookie')
+        sources.remember(number, 'header-value', selective=True)
+        diagnostics = module['Diagnostics']()
+        # Inject untemplated names to test the final check independently of the renderer.
+        outline = {'entries': [{'response': {'headers': [number],
+                   'body': {'fields': [{'name': f'account{number}', 'type': '<bool>'}]}}}]}
+        offenders = module['self_check'](outline, sources, diagnostics)
+        stdout = diagnostics.render(1, len(offenders))
+        copied = {bucket['field_kind']: bucket['source_kinds'] for bucket in json.loads(stdout)['buckets']
                   if bucket['rule'] == 'copied-input-value'}
         self.assertEqual(copied, {
             'json-key': {'header-value': 1},
             'response.header-name': {'cookie': 1, 'header-value': 1},
         })
+        self.assertNotIn(number, stdout)
 
     def test_diagnose_suppresses_parser_warnings_with_input_fragments(self):
         self.har['log']['entries'] = [
@@ -615,23 +713,25 @@ class HarSkeletonTests(unittest.TestCase):
         self.assertEqual(outline['entries'][0]['path'], '/api/' + '/'.join([
             '<id>', '<id>', '<token>', '<token>', '<id>', '<id>', '<token>', '<token>', '<token>']))
 
-    def test_self_check_refuses_abused_structural_slots_without_echo(self):
+    def test_header_shape_templates_abused_structural_slots_without_echo(self):
         for name in (f'X-Account-{ACCOUNT}', 'ZGV2aWNlc2VjcmV0ZmFrZQ', EMAIL,
                      'X-$22.50', 'X-$.42', 'X-11.04.25', 'X-Sep-03-26'):
             with self.subTest(name=name):
                 self.har = synthetic_har()
                 self.har['log']['entries'][0]['request']['headers'].append(header(name, 'drop the value'))
-                result = self.run_tool('-o', self.destination)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(result.stdout, '')
-                self.assertRegex(result.stderr, r'^\$\.entries\[0\]\.request\.headers\[\d+\]\n$')
-                self.assertNotIn(name, result.stderr)
-                self.assertFalse(self.destination.exists())
+                result = self.run_tool()
+                names = self.successful(result)['entries'][0]['request']['headers']
+                self.assertIn('<key:email>' if name == EMAIL else '<key:opaque>', names)
+                self.assertNotIn(name, result.stdout)
+                module = runpy.run_path(str(SCRIPT))
+                self.assertEqual(module['self_check']({'entries': [{'request': {'headers': [name]}}]},
+                                                       module['InputValues']({})),
+                                 ['$.entries[0].request.headers[0]'])
 
     def test_self_check_rejects_data_copied_into_a_valid_name_or_path(self):
         self.har['log']['entries'][0]['request']['url'] = 'https://secure.chase.com/api/accountName'
         headers = self.har['log']['entries'][0]['request']['headers']
-        headers.extend([header('X-Device', 'accountName'), header('candidate', 'private-field'),
+        headers.extend([header('X-Device', 'accountName'), header('X-Session-Token', 'private-field'),
                         header('Private-Field', 'fake'), header('X-Fake', 'drop')])
         result = self.run_tool()
         self.assertEqual(result.returncode, 1)
@@ -678,8 +778,10 @@ class HarSkeletonTests(unittest.TestCase):
                 elif source == 'body':
                     content.update(mimeType='text/plain', text=f'hello {secret} world')
                 elif source == 'web body':
+                    request['url'] = 'https://secure.chase.com/auth/lookup'
                     content.update(mimeType='application/javascript', text=f'let variable = "{secret}";')
                 elif source == 'embedded JSON':
+                    request['url'] = 'https://secure.chase.com/auth/lookup'
                     content.update(mimeType='text/html', text='<script type=application/json>'
                                    r'{"alias":"private\u004darker"}' '</script>')
                 elif source == 'postData':
@@ -699,18 +801,25 @@ class HarSkeletonTests(unittest.TestCase):
                 result = self.run_tool('-o', self.destination)
                 self.assert_refused(result, ['$.entries[0].response.body.fields[0].name'], secret)
 
-    def test_account_number_in_json_key_is_refused(self):
+    def test_account_number_in_json_key_is_templated_and_caught_if_retained(self):
         number = '0742'
         accounts = self.har['log']['entries'][0]
         accounts['response']['content']['text'] = json.dumps({f'account{number}': True})
-        result = self.run_tool('-o', self.destination)
-        self.assert_refused(result, ['$.entries[0].response.body.fields[0].name'], number)
+        result = self.run_tool()
+        self.assertNotIn(number, result.stdout)
+        self.assertEqual(self.successful(result)['entries'][0]['response']['body']['fields'],
+                         [{'name': '<key:opaque>', 'count_bucket': 'le-1'}])
+        module = runpy.run_path(str(SCRIPT))
+        outline = {'entries': [{'response': {'body': {'fields': [{'name': f'account{number}' }]}}}]}
+        self.assertEqual(module['self_check'](outline, module['InputValues']({})),
+                         ['$.entries[0].response.body.fields[0].name'])
 
-    def test_email_in_header_name_is_refused(self):
+    def test_email_in_header_name_is_templated(self):
         first = entry('https://secure.chase.com/api', request_headers=[header(EMAIL, 'fake')])
         self.har['log']['entries'] = [first]
-        result = self.run_tool('-o', self.destination)
-        self.assert_refused(result, ['$.entries[0].request.headers[0]'], EMAIL)
+        result = self.run_tool()
+        self.assertEqual(self.successful(result)['entries'][0]['request']['headers'], ['<key:email>'])
+        self.assertNotIn(EMAIL, result.stdout)
 
     def test_first_party_origin_with_a_copied_secret_label_is_refused(self):
         secret = 'privateprofile'
@@ -744,14 +853,17 @@ class HarSkeletonTests(unittest.TestCase):
         first['response']['headers'].pop()
         self.assert_refused(self.run_tool('-o', self.destination), ['$.entries[0].origin'], origin)
 
-    def test_base64url_tokens_are_refused_in_structural_names(self):
+    def test_base64url_tokens_are_templated_in_structural_names(self):
         token = 'I-sdtByincRGCWbyTRROkg'
         first = entry('https://secure.chase.com/api', text=json.dumps({token: True}),
                       request_headers=[header(f'X-Custom-{token}', 'fake')])
         self.har['log']['entries'] = [first]
-        self.assert_refused(self.run_tool('-o', self.destination),
-                            ['$.entries[0].request.headers[0]', '$.entries[0].response.body.fields[0].name'],
-                            token, token.lower())
+        result = self.run_tool()
+        outline = self.successful(result)['entries'][0]
+        self.assertEqual(outline['request']['headers'], ['<key:opaque>'])
+        self.assertEqual(outline['response']['body']['fields'],
+                         [{'name': '<key:opaque>', 'count_bucket': 'le-1'}])
+        self.assertNotIn(token.lower(), result.stdout.lower())
 
     def test_web_asset_protocol_literals_and_versioned_names_are_retained(self):
         names = ['addressLine1Verification', 'fido2AuthenticationEnabled', 'maskedPANExpirationDate',
@@ -790,12 +902,12 @@ class HarSkeletonTests(unittest.TestCase):
                            '''const second = 'fetch("/private/marker")';''',
                            'logger.url("/private/marker");'
                            'const options = {"Content-Type": "application/json; application/privatemarker"};'):
-            script = entry('https://assets.example.test/script', mime='application/javascript', text=javascript)
+            script = entry('https://secure.chase.com/auth/script', mime='application/javascript', text=javascript)
             self.har['log']['entries'] = [first, script]
             self.assert_refused(self.run_tool('-o', self.destination),
-                                ['$.entries[0].path', '$.entries[0].response.mime', '$.path_counts[0].path'],
+                                ['$.entries[0].path', '$.entries[0].response.mime', '$.path_counts[1].path'],
                                 '/private/marker', 'application/privatemarker')
-        page = entry('https://secure.chase.com/home', mime='text/html',
+        page = entry('https://secure.chase.com/auth/home', mime='text/html',
                      text='<style type="text/plain">logger.url("/private/marker");</style>')
         self.har['log']['entries'] = [first, page]
         self.assert_refused(self.run_tool('-o', self.destination),
@@ -807,12 +919,12 @@ class HarSkeletonTests(unittest.TestCase):
         for fragment in (f'<![CDATA[{secret}]]>', f'<?echo {secret}?>',
                          f'<!DOCTYPE html SYSTEM "{secret}">'):
             with self.subTest(fragment=fragment):
-                page = entry('https://secure.chase.com/home', mime='application/xhtml+xml', text=fragment)
+                page = entry('https://secure.chase.com/auth/home', mime='application/xhtml+xml', text=fragment)
                 self.har['log']['entries'] = [first, page]
                 self.assert_refused(self.run_tool('-o', self.destination),
                                     ['$.entries[0].response.body.fields[0].name'], secret)
         self.har['log']['entries'] = [
-            first, entry('https://secure.chase.com/home', mime='text/html', text=f'<script>{secret}'),
+            first, entry('https://secure.chase.com/auth/home', mime='text/html', text=f'<script>{secret}'),
         ]
         self.assert_refused(self.run_tool('-o', self.destination),
                             ['Could not read or process the HAR.'], secret)
@@ -852,14 +964,19 @@ class HarSkeletonTests(unittest.TestCase):
         self.assertNotIn(token, stderr.getvalue())
         self.assertFalse(self.destination.exists())
 
-    def test_amount_in_ofx_tag_is_refused(self):
+    def test_amount_in_ofx_tag_is_templated_and_caught_if_retained(self):
         amount = '22.50'
         self.har['log']['entries'] = [
             entry('https://secure.chase.com/download', mime='application/qfx',
                   text=f'<OFX><TRN{amount}>fake</TRN{amount}></OFX>'),
         ]
-        result = self.run_tool('-o', self.destination)
-        self.assert_refused(result, ['$.entries[0].response.body[1]'], amount)
+        result = self.run_tool()
+        self.assertEqual(self.successful(result)['entries'][0]['response']['body'], ['OFX', '<tag:opaque>'])
+        self.assertNotIn(amount, result.stdout)
+        module = runpy.run_path(str(SCRIPT))
+        outline = {'entries': [{'response': {'body': ['OFX', f'TRN{amount}']}}]}
+        self.assertEqual(module['self_check'](outline, module['InputValues']({})),
+                         ['$.entries[0].response.body[1]'])
 
     def test_self_check_refuses_base64_spanning_path_slashes(self):
         candidate = 'VmFsdWVz/QXJlRmFr'

@@ -398,6 +398,8 @@ class HarSkeletonTests(unittest.TestCase):
         page = entry('https://secure.chase.com/home', mime='text/html',
                      text='<a href=/api/accounts>Open</a>'
                           '<script type=application/json>{"addressLine1Verification":true}</script>'
+                          '<script type=text/x-javascript>fetch("/api/accounts");</script>'
+                          '<script type=application/x-ecmascript>fetch("/api/accounts");</script>'
                           '<svg><image href="/api/accounts" /></svg>'
                           '<style>div { background-image: url("/api/accounts"); }</style>')
         css = entry('https://assets.example.test/app/theme', mime='text/css',

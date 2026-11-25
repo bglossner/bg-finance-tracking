@@ -375,6 +375,8 @@ class HarSkeletonTests(unittest.TestCase):
         first['response'].update(status=302, redirectURL=origin)
         self.har['log']['entries'] = [first]
         self.assertEqual(self.successful(self.run_tool())['entries'][0]['origin'], origin)
+        first['response']['headers'].pop()
+        self.assert_refused(self.run_tool('-o', self.destination), ['$.entries[0].origin'], origin)
 
     def test_base64url_tokens_are_refused_in_structural_names(self):
         token = 'I-sdtByincRGCWbyTRROkg'
@@ -391,7 +393,8 @@ class HarSkeletonTests(unittest.TestCase):
         first = entry('https://secure.chase.com/api/accounts', text=json.dumps(dict.fromkeys(names, True)),
                       request_headers=[header('Accept', 'application/merge-patch+json')])
         script = entry('https://assets.example.test/app/script', mime='application/javascript',
-                       text='fetch("/api/accounts", {headers: {"Content-Type": "application/json; charset=UTF-8"}});')
+                       text='self.fetch("/api/accounts", {headers: {"Content-Type": "application/json; charset=UTF-8"}});'
+                            'new window.Request("/api/accounts");')
         page = entry('https://secure.chase.com/home', mime='text/html',
                      text='<a href=/api/accounts>Open</a>'
                           '<script type=application/json>{"addressLine1Verification":true}</script>'
@@ -401,7 +404,8 @@ class HarSkeletonTests(unittest.TestCase):
                     text='div { background-image: url("/api/accounts"); }')
         graphql = entry('https://secure.chase.com/api/graphql', mime='application/graphql-response+json')
         xhtml = entry('https://secure.chase.com/home/profile', mime='application/xhtml+xml',
-                      text='<script type="application/ld+json"><![CDATA[{"@type":"WebSite"}]]></script>')
+                      text='<script type="application/ld+json">'
+                           '<![CDATA[{"@type":]]><![CDATA["WebSite"}]]></script>')
         self.har['log']['entries'] = [first, script, page, css, graphql, xhtml]
         outline = self.successful(self.run_tool())
         self.assertEqual(outline['entries'][0]['path'], '/api/accounts')
@@ -423,6 +427,11 @@ class HarSkeletonTests(unittest.TestCase):
             self.assert_refused(self.run_tool('-o', self.destination),
                                 ['$.entries[0].path', '$.entries[0].response.mime', '$.path_counts[0].path'],
                                 '/private/marker', 'application/privatemarker')
+        page = entry('https://secure.chase.com/home', mime='text/html',
+                     text='<style type="text/plain">logger.url("/private/marker");</style>')
+        self.har['log']['entries'] = [first, page]
+        self.assert_refused(self.run_tool('-o', self.destination),
+                            ['$.entries[0].path', '$.path_counts[1].path'], '/private/marker')
 
     def test_html_markup_values_remain_private(self):
         secret = 'privateMarker'
@@ -443,11 +452,12 @@ class HarSkeletonTests(unittest.TestCase):
     def test_bare_query_and_form_parameter_names_are_retained(self):
         self.har['log']['entries'] = [
             entry('https://secure.chase.com/api?includeDetails', method='POST',
-                  post={'mimeType': 'application/x-www-form-urlencoded', 'text': 'downloadStatement'}),
+                  post={'mimeType': 'application/x-www-form-urlencoded', 'text': 'filename'},
+                  response_headers=[header('Content-Disposition', 'attachment; filename=""')]),
         ]
         result = self.successful(self.run_tool())['entries'][0]
         self.assertEqual(result['query'], [header_type('includeDetails', '<str:empty>')])
-        self.assertEqual(result['request']['body'], [header_type('downloadStatement', '<str:empty>')])
+        self.assertEqual(result['request']['body'], [header_type('filename', '<str:empty>')])
 
     def test_templated_path_token_is_refused_if_it_slips_through(self):
         token = 'retained/marker'

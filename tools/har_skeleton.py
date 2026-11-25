@@ -41,9 +41,10 @@ OFX_MIMES = frozenset('application/ofx application/qfx application/x-ofx applica
 DOWNLOAD_MIMES = frozenset({'', 'application/octet-stream', 'text/plain', 'application/download',
                            'application/x-download', 'application/force-download',
                            'application/x-force-download', 'application/binary'})
-WEB_MIMES = frozenset({'text/html', 'application/xhtml+xml', 'text/css', 'text/javascript',
-                       'application/javascript', 'text/ecmascript', 'application/ecmascript',
-                       'application/x-javascript'})
+HTML_MIMES = frozenset({'text/html', 'application/xhtml+xml'})
+SCRIPT_MIMES = frozenset({'text/javascript', 'application/javascript', 'text/ecmascript',
+                          'application/ecmascript', 'application/x-javascript'})
+WEB_MIMES = HTML_MIMES | SCRIPT_MIMES | {'text/css'}
 OFX_START = re.compile(rb'(?:OFXHEADER[ \t]*:|<OFX(?:[\s>]))', re.IGNORECASE)
 SGML = re.compile(r'<!--(?P<comment>.*?)-->|<!\[CDATA\[(?P<cdata>.*?)\]\]>|'
                   r'<(?P<closing>/)?(?P<tag>[A-Za-z_][A-Za-z0-9_.:-]*)\s*>', re.DOTALL)
@@ -84,11 +85,14 @@ DURATION_BOUNDS = (10, 100, 1000, 10000)
 COUNT_BOUNDS = (1, 5, 20, 100)
 LENGTH_BOUNDS = (8, 32, 128)
 TOKEN = re.compile(r'''[^\s"'=<>{}(),;]+''')
+MIME_PARAMETER = re.compile(r';\s*((?:"(?:[^"\\]|\\.)*"|[^";])*)')
+CDATA_TEXT = re.compile(r'<!\[CDATA\[(.*?)\]\]>', re.S)
 WEB_LITERAL = re.compile(r'''(?P<comment>/\*.*?\*/|//[^\r\n]*)|'''
                          r'''(?P<quoted>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)''', re.S)
 WEB_PROPERTY_END = re.compile(r'\s*:')
 WEB_MIME_START = re.compile(r'''["'](?:content-type|accept)["']\s*:\s*\Z''', re.I)
-JS_ROUTE_START = re.compile(r'(?<![\w$.])(?:(?:(?:window|globalThis)\.)?fetch|new\s+Request)\s*\(\s*\Z')
+JS_ROUTE_START = re.compile(r'(?<![\w$.])(?:(?:(?:window|self|globalThis)\.)?fetch|'
+                            r'new\s+(?:(?:window|self|globalThis)\.)?Request)\s*\(\s*\Z')
 CSS_ROUTE_START = re.compile(r'\burl\s*\(\s*\Z', re.I)
 HTML_MIME_TAGS = frozenset('a embed link object script source style'.split())
 HTML_ROUTE_ATTRIBUTES = {'href': frozenset('a area base image link use'.split()),
@@ -362,9 +366,13 @@ def mime_header(value, header, sources):
         raise InvalidInput
     message = Message(policy=policy.compat32)
     message[header] = value
-    for name, parameter in message.get_params(header=header, failobj=[])[1:]:
-        # The email parser represents a bare parameter fragment as a name with an empty value.
-        sources.remember(collapse_rfc2231_value(parameter, errors='strict') or name)
+    for _, parameter in message.get_params(header=header, failobj=[])[1:]:
+        sources.remember(collapse_rfc2231_value(parameter, errors='strict'))
+    # The email parser cannot distinguish bare fragments from explicit empty values.
+    for match in MIME_PARAMETER.finditer(value):
+        fragment = match[1]
+        if '=' not in fragment:
+            remember_text(fragment, sources)
     return message
 
 
@@ -554,9 +562,15 @@ class HtmlValues(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         if tag == 'script':
-            self.code_mime = mime_type(dict(attrs).get('type') or '')
+            declared = (dict(attrs).get('type') or '').strip().lower()
+            mime = mime_type(declared)
+            if declared in ('', 'module'):
+                self.code_mime = 'text/javascript'
+            else:
+                self.code_mime = mime if mime in SCRIPT_MIMES or is_json_mime(mime) else ''
         elif tag == 'style':
-            self.code_mime = 'text/css'
+            declared = (dict(attrs).get('type') or '').strip()
+            self.code_mime = 'text/css' if not declared or mime_type(declared) == 'text/css' else ''
         for name, value in attrs:
             if not value:
                 continue
@@ -573,13 +587,13 @@ class HtmlValues(HTMLParser):
     def handle_data(self, data):
         if self.code_mime is not None:
             wrapped = data.strip()
-            if wrapped.startswith('<![CDATA[') and wrapped.endswith(']]>'):
-                data = wrapped[9:-3]
+            if wrapped.startswith('<![CDATA['):
+                data = CDATA_TEXT.sub(r'\1', data)
         if self.code_mime is not None and is_json_mime(self.code_mime):
             if data.strip():
                 self.sources.remember(parse_json(data))
         else:
-            remember_text(data, self.sources, web_mime=self.code_mime)
+            remember_text(data, self.sources, web_mime=self.code_mime or None)
 
     def handle_comment(self, data):
         remember_text(data, self.sources)
@@ -662,7 +676,9 @@ def disposition_shape(value, sources):
 def response_shape(response, sources):
     result, headers = header_shape(response, sources, response=True)
     redirect = response.get('redirectURL')
-    if isinstance(redirect, str) and bank_origin(redirect):
+    if (isinstance(redirect, str) and bank_origin(redirect)
+            and any(redirect.strip().casefold() == value.strip().casefold()
+                    for value in headers.get('location', ()))):
         sources.structural_occurrence(redirect)
     content = require(response.get('content', {}), dict)
     declared_mime = require(content.get('mimeType', ''), str)
@@ -710,7 +726,7 @@ def response_shape(response, sources):
     elif text:
         if encoding == 'base64' and not mime.startswith(('audio/', 'font/', 'image/', 'video/')):
             text = base64.b64decode(text, validate=True).decode('utf-8', errors='replace')
-        if mime in ('text/html', 'application/xhtml+xml'):
+        if mime in HTML_MIMES:
             parser = HtmlValues(sources)
             parser.feed(text)
             parser.close()

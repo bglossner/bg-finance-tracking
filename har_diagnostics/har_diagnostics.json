@@ -1,0 +1,990 @@
+{
+  "buckets": [
+    {
+      "count": 353,
+      "examples": [
+        {
+          "field_path": "$.entries[12].response.body.fields[5].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.entries[12].response.body.fields[8].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[12].response.body.fields[14].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[12].response.body.fields[17].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[12].response.body.fields[24].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "17-32"
+          }
+        }
+      ],
+      "field_kind": "json-key",
+      "rule": "base64-like"
+    },
+    {
+      "count": 42,
+      "examples": [
+        {
+          "field_path": "$.entries[268].request.body[1].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "digit",
+              "dot"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[268].request.body[7].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot"
+            ],
+            "length_bucket": "5-8"
+          }
+        },
+        {
+          "field_path": "$.entries[268].request.body[17].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot"
+            ],
+            "length_bucket": "5-8"
+          }
+        },
+        {
+          "field_path": "$.entries[268].request.body[19].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot"
+            ],
+            "length_bucket": "5-8"
+          }
+        },
+        {
+          "field_path": "$.entries[268].request.body[29].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot"
+            ],
+            "length_bucket": "9-16"
+          }
+        }
+      ],
+      "field_kind": "form-name",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 40,
+        "json-scalar": 2
+      }
+    },
+    {
+      "count": 23207,
+      "examples": [
+        {
+          "field_path": "$.entries[12].response.body.fields[0].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.entries[12].response.body.fields[1].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.entries[12].response.body.fields[2].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[12].response.body.fields[4].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.entries[12].response.body.fields[6].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "upper",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "33-64"
+          }
+        }
+      ],
+      "field_kind": "json-key",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 22223,
+        "form-value": 116,
+        "har-metadata": 49,
+        "header-value": 314,
+        "json-scalar": 11672,
+        "url": 142
+      }
+    },
+    {
+      "count": 313,
+      "examples": [
+        {
+          "field_path": "$.entries[0].request.content_type",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[0].request.accept",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[0].request.mime",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[2].request.content_type",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[2].request.mime",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "9-16"
+          }
+        }
+      ],
+      "field_kind": "mime",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 313
+      }
+    },
+    {
+      "count": 3,
+      "examples": [
+        {
+          "field_path": "$.entries[282].response.body[5]",
+          "shape": {
+            "classes": [
+              "upper"
+            ],
+            "length_bucket": "5-8"
+          }
+        },
+        {
+          "field_path": "$.entries[282].response.body[7]",
+          "shape": {
+            "classes": [
+              "upper"
+            ],
+            "length_bucket": "5-8"
+          }
+        },
+        {
+          "field_path": "$.entries[282].response.body[12]",
+          "shape": {
+            "classes": [
+              "upper",
+              "digit"
+            ],
+            "length_bucket": "17-32"
+          }
+        }
+      ],
+      "field_kind": "ofx-tag",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 3
+      }
+    },
+    {
+      "count": 275,
+      "examples": [
+        {
+          "field_path": "$.entries[0].origin",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[1].origin",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[2].origin",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[3].origin",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[4].origin",
+          "shape": {
+            "classes": [
+              "lower",
+              "dot",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        }
+      ],
+      "field_kind": "origin",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 275,
+        "form-value": 11,
+        "json-scalar": 275,
+        "query-value": 11
+      }
+    },
+    {
+      "count": 265,
+      "examples": [
+        {
+          "field_path": "$.entries[0].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[1].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[2].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "digit",
+              "slash"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.entries[3].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[4].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "9-16"
+          }
+        }
+      ],
+      "field_kind": "path",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 265,
+        "form-value": 5,
+        "json-scalar": 19
+      }
+    },
+    {
+      "count": 45,
+      "examples": [
+        {
+          "field_path": "$.path_counts[2].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.path_counts[3].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "upper",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.path_counts[7].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.path_counts[8].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.path_counts[9].path",
+          "shape": {
+            "classes": [
+              "lower",
+              "slash"
+            ],
+            "length_bucket": "17-32"
+          }
+        }
+      ],
+      "field_kind": "path_counts.path",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 45,
+        "form-value": 4,
+        "json-scalar": 14
+      }
+    },
+    {
+      "count": 6,
+      "examples": [
+        {
+          "field_path": "$.entries[2].request.body",
+          "shape": {
+            "classes": [
+              "lower",
+              "digit",
+              "hyphen",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[269].request.body",
+          "shape": {
+            "classes": [
+              "lower",
+              "digit",
+              "hyphen",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[270].request.body",
+          "shape": {
+            "classes": [
+              "lower",
+              "digit",
+              "hyphen",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[280].request.body",
+          "shape": {
+            "classes": [
+              "lower",
+              "digit",
+              "hyphen",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[283].request.body",
+          "shape": {
+            "classes": [
+              "lower",
+              "digit",
+              "hyphen",
+              "slash",
+              "symbol"
+            ],
+            "length_bucket": "17-32"
+          }
+        }
+      ],
+      "field_kind": "placeholder",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 6
+      }
+    },
+    {
+      "count": 11,
+      "examples": [
+        {
+          "field_path": "$.entries[258].query[0].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[281].query[0].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.entries[281].query[1].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[281].query[2].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "5-8"
+          }
+        },
+        {
+          "field_path": "$.entries[281].query[3].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "9-16"
+          }
+        }
+      ],
+      "field_kind": "query-name",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 11,
+        "json-scalar": 2
+      }
+    },
+    {
+      "count": 1940,
+      "examples": [
+        {
+          "field_path": "$.entries[0].request.headers[5]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[0].request.headers[6]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[0].request.headers[7]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[0].request.headers[8]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[0].request.headers[9]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "9-16"
+          }
+        }
+      ],
+      "field_kind": "request.header-name",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 1940,
+        "header-value": 325
+      }
+    },
+    {
+      "count": 3845,
+      "examples": [
+        {
+          "field_path": "$.entries[0].response.headers[0]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[0].response.headers[1]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[0].response.headers[2]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "9-16"
+          }
+        },
+        {
+          "field_path": "$.entries[0].response.headers[5]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[0].response.headers[7]",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen"
+            ],
+            "length_bucket": "9-16"
+          }
+        }
+      ],
+      "field_kind": "response.header-name",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 3845,
+        "har-metadata": 8,
+        "header-value": 503,
+        "json-scalar": 555
+      }
+    },
+    {
+      "count": 1,
+      "examples": [
+        {
+          "field_path": "$.entries[242].response.body[4]",
+          "shape": {
+            "classes": [
+              "lower",
+              "upper"
+            ],
+            "length_bucket": "5-8"
+          }
+        }
+      ],
+      "field_kind": "xml-tag",
+      "rule": "copied-input-value",
+      "source_kinds": {
+        "body-token": 1
+      }
+    },
+    {
+      "count": 122,
+      "examples": [
+        {
+          "field_path": "$.entries[55].response.body.fields[65].type.fields[6].type.fields[0].name",
+          "shape": {
+            "classes": [
+              "digit"
+            ],
+            "length_bucket": "5-8"
+          }
+        },
+        {
+          "field_path": "$.entries[55].response.body.fields[65].type.fields[6].type.fields[1].name",
+          "shape": {
+            "classes": [
+              "digit"
+            ],
+            "length_bucket": "5-8"
+          }
+        },
+        {
+          "field_path": "$.entries[55].response.body.fields[65].type.fields[6].type.fields[3].name",
+          "shape": {
+            "classes": [
+              "digit"
+            ],
+            "length_bucket": "0-4"
+          }
+        },
+        {
+          "field_path": "$.entries[207].response.body.fields[0].type.fields[6].type.fields[0].name",
+          "shape": {
+            "classes": [
+              "digit"
+            ],
+            "length_bucket": "0-4"
+          }
+        },
+        {
+          "field_path": "$.entries[207].response.body.fields[0].type.fields[6].type.fields[1].name",
+          "shape": {
+            "classes": [
+              "digit"
+            ],
+            "length_bucket": "0-4"
+          }
+        }
+      ],
+      "field_kind": "json-key",
+      "rule": "digit-run"
+    },
+    {
+      "count": 1,
+      "examples": [
+        {
+          "field_path": "$.entries[246].request.body.fields[0].type.first.fields[0].type.fields[0].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "upper",
+              "digit",
+              "underscore",
+              "symbol"
+            ],
+            "length_bucket": "33-64"
+          }
+        }
+      ],
+      "field_kind": "json-key",
+      "rule": "email"
+    },
+    {
+      "count": 900,
+      "examples": [
+        {
+          "field_path": "$.entries[12].response.body.fields[0].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.entries[12].response.body.fields[1].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.entries[12].response.body.fields[2].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[12].response.body.fields[3].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[12].response.body.fields[4].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "hyphen",
+              "slash"
+            ],
+            "length_bucket": "33-64"
+          }
+        }
+      ],
+      "field_kind": "json-key",
+      "rule": "invalid-structure"
+    },
+    {
+      "count": 100,
+      "examples": [
+        {
+          "field_path": "$.entries[220].response.body.fields[0].type.fields[0].type.fields[11].type.fields[267].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "upper",
+              "digit"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[220].response.body.fields[0].type.fields[0].type.fields[11].type.fields[268].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "upper",
+              "digit"
+            ],
+            "length_bucket": "17-32"
+          }
+        },
+        {
+          "field_path": "$.entries[220].response.body.fields[0].type.fields[0].type.fields[11].type.fields[269].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "upper",
+              "digit",
+              "underscore",
+              "dot"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.entries[220].response.body.fields[0].type.fields[0].type.fields[11].type.fields[270].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "upper",
+              "digit",
+              "underscore",
+              "dot"
+            ],
+            "length_bucket": "33-64"
+          }
+        },
+        {
+          "field_path": "$.entries[220].response.body.fields[0].type.fields[0].type.fields[11].type.fields[271].name",
+          "shape": {
+            "classes": [
+              "lower",
+              "upper",
+              "digit",
+              "underscore",
+              "dot"
+            ],
+            "length_bucket": "33-64"
+          }
+        }
+      ],
+      "field_kind": "json-key",
+      "rule": "opaque-alphanumeric"
+    }
+  ],
+  "entry_count": 287,
+  "offender_count": 30195,
+  "python_version": "3.12.3",
+  "status": "complete",
+  "tool_version": "1.2.0"
+}

@@ -116,6 +116,7 @@ CORS_HEADER_LISTS = (
     ('response', 'access-control-allow-headers', 'request'),
     ('response', 'access-control-expose-headers', 'response'),
 )
+CORS_PREFLIGHT_NAMES = frozenset({'accept', 'authorization', 'content-type'})
 BROWSER_METADATA_ENUMS = {
     '_priority': frozenset('verylow low medium high veryhigh'.split()),
     '_resourceType': frozenset('document stylesheet image media font script texttrack xhr fetch prefetch '
@@ -899,46 +900,91 @@ def cors_names(value):
     return names if all(HTTP_TOKEN.fullmatch(name) for name in names) else set()
 
 
-def exclude_cors_header_mirrors(entries, outlines, sources):
+def cors_origin(url):
+    try:
+        host = url.hostname
+        if not host or url.scheme not in ('http', 'https'):
+            return None
+        port = url.port
+        if port is None:
+            port = 443 if url.scheme == 'https' else 80
+        host = f'[{IPv6Address(host)}]' if ':' in host and '%' not in host else host.removesuffix('.')
+        if structured_origin(f'{url.scheme}://{host}'):
+            return url.scheme, host, port
+    except ValueError:
+        return None
+
+
+def cors_header_origin(value):
+    scheme, _, authority = value.partition('://')
+    if scheme not in ('http', 'https') or not authority or re.search(r'[\x00-\x20\x7f/?#@]', authority):
+        return None
+    try:
+        return cors_origin(urlsplit(value))
+    except ValueError:
+        return None
+
+
+def exclude_cors_header_mirrors(entries, outlines, starts, sources):
     later_requests = defaultdict(set)
-    for entry, outline in zip(reversed(entries), reversed(outlines)):
-        request_headers = defaultdict(list)
-        for header in entry['request'].get('headers', []):
-            request_headers[header['name'].lower()].append(header['value'])
+    for started, entry, outline in sorted(zip(starts, entries, outlines), key=lambda row: row[0], reverse=True):
+        header_values = defaultdict(list)
+        for side in ('request', 'response'):
+            for header in entry[side].get('headers', []):
+                header_values[side, header['name'].lower()].append(header['value'])
         request_names = frozenset(outline['request']['headers'])
-        origins = request_headers['origin']
-        method = outline['method']
-        if len(origins) == 1 and structured_origin(origins[0]):
-            target = (entry['request']['url'], origins[0])
-            preflight_methods = request_headers['access-control-request-method']
-            preflight_headers = request_headers['access-control-request-headers']
-            if method == 'OPTIONS' and len(preflight_methods) == len(preflight_headers) == 1:
-                declared_names = cors_names(preflight_headers[0])
-                candidates = later_requests.get((*target, preflight_methods[0]), ())
-                if declared_names and any(declared_names <= names for names in candidates):
-                    request_names |= declared_names
-            elif method in METHODS and method != 'OPTIONS':
-                later_requests[(*target, method)].add(request_names)
         retained = {'request': request_names, 'response': set(outline['response']['headers'])}
         for side, list_header, mirrored_side in CORS_HEADER_LISTS:
-            for header in entry[side].get('headers', []):
-                if header['name'].lower() == list_header:
-                    value = header['value']
-                    names = cors_names(value)
-                    if names and names <= retained[mirrored_side]:
-                        sources.structural_occurrence(value, 'header-value')
+            for value in header_values[side, list_header]:
+                names = cors_names(value)
+                if names and names <= retained[mirrored_side]:
+                    sources.structural_occurrence(value, 'header-value')
+
+        origins = header_values['request', 'origin']
+        method = outline['method']
+        raw_url = entry['request']['url']
+        origin = cors_header_origin(origins[0]) if len(origins) == 1 else None
+        if not origin:
+            continue
+        target = (raw_url, origin)
+        if method in METHODS and method != 'OPTIONS':
+            later_requests[(*target, method)].add((started, request_names))
+            continue
+        if method != 'OPTIONS' or not 200 <= outline['response']['status'] < 300:
+            continue
+        request_origin = cors_origin(urlsplit(raw_url))
+        if not request_origin or origin == request_origin:
+            continue
+        methods = header_values['request', 'access-control-request-method']
+        declared = header_values['request', 'access-control-request-headers']
+        allowed = header_values['response', 'access-control-allow-headers']
+        allow_origins = header_values['response', 'access-control-allow-origin']
+        if len(methods) != 1 or len(declared) != 1 or len(allowed) != 1 or len(allow_origins) != 1:
+            continue
+        if allow_origins[0] != '*' and cors_header_origin(allow_origins[0]) != origin:
+            continue
+        declared_names = cors_names(declared[0])
+        allowed_names = cors_names(allowed[0])
+        candidates = later_requests.get((*target, methods[0]), ())
+        if (declared_names and declared_names <= allowed_names <= CORS_PREFLIGHT_NAMES
+                and any(later > started and allowed_names <= names for later, names in candidates)):
+            for value, names in ((declared[0], declared_names), (allowed[0], allowed_names)):
+                if not names <= request_names:
+                    sources.structural_occurrence(value, 'header-value')
 
 
 def make_skeleton(document, include_host, sources):
     log = require(require(document, dict)['log'], dict)
     entries = require(log['entries'], list)
     output = []
+    starts = []
     counts = Counter()
     first = None
     for index, entry in enumerate(entries):
         entry = require(entry, dict)
         exclude_browser_metadata(entry, sources)
         started = har_start(entry['startedDateTime'])
+        starts.append(started)
         if first is None:
             first = started
         request = require(entry['request'], dict)
@@ -966,7 +1012,7 @@ def make_skeleton(document, include_host, sources):
                    'request': request_info, 'response': response}
         output.append(outline)
         counts[path] += 1
-    exclude_cors_header_mirrors(entries, output, sources)
+    exclude_cors_header_mirrors(entries, output, starts, sources)
     return {'entries': output, 'path_counts': [{'path': path, 'count': count}
                                                for path, count in sorted(counts.items())]}
 

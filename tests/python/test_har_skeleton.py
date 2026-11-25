@@ -391,19 +391,23 @@ class HarSkeletonTests(unittest.TestCase):
 
     def test_cors_preflight_requires_matching_later_request(self):
         target = 'https://asset.chase.com/api'
-        origin = 'https://www.chase.com'
+        origin = 'https://www.chase.com:8443'
         name = 'content-type'
         preflight = entry(target, method='OPTIONS', request_headers=[
             header('Origin', origin), header('Access-Control-Request-Method', 'POST'),
             header('Access-Control-Request-Headers', name),
-        ], response_headers=[header('Access-Control-Allow-Headers', name)])
+        ], response_headers=[header('Access-Control-Allow-Headers', name),
+                             header('Access-Control-Allow-Origin', origin)])
         preflight['response'].update(status=204, headers=preflight['response']['headers'][1:])
         preflight['response']['content']['mimeType'] = ''
-        actual = entry(target, method='POST', request_headers=[
+        actual = entry(target, seconds='01', method='POST', request_headers=[
             header('Origin', origin), header(name, 'application/json'),
         ])
         self.har['log']['entries'] = [preflight, actual]
         self.successful(self.run_tool())
+        self.har['log']['entries'].reverse()
+        self.successful(self.run_tool())
+        self.har['log']['entries'].reverse()
 
         original = actual['request']
         for field, wrong in (('url', target + '/other'), ('method', 'GET'), ('origin', target.rsplit('/', 1)[0])):
@@ -417,6 +421,30 @@ class HarSkeletonTests(unittest.TestCase):
                 self.assert_refused(self.run_tool('-o', self.destination),
                                     ['$.entries[1].request.headers[0]', '$.entries[1].response.headers[0]'],
                                     name)
+        actual['request'] = original
+        actual['startedDateTime'], preflight['startedDateTime'] = (
+            preflight['startedDateTime'], actual['startedDateTime'])
+        paths = ['$.entries[1].request.headers[0]', '$.entries[1].response.headers[0]']
+        self.assert_refused(self.run_tool('-o', self.destination), paths, name)
+        actual['startedDateTime'], preflight['startedDateTime'] = (
+            preflight['startedDateTime'], actual['startedDateTime'])
+        preflight['response']['status'] = 403
+        self.assert_refused(self.run_tool('-o', self.destination), paths, name)
+        preflight['response']['status'] = 204
+        same_origin = target.rsplit('/', 1)[0]
+        preflight['request']['headers'][0]['value'] = same_origin
+        preflight['response']['headers'][1]['value'] = same_origin
+        actual['request']['headers'][0]['value'] = same_origin
+        self.assert_refused(self.run_tool('-o', self.destination), paths, name)
+        preflight['request']['headers'][0]['value'] = origin
+        preflight['response']['headers'][1]['value'] = origin
+        actual['request']['headers'][0]['value'] = origin
+        private_name = 'synthetic-private-key'
+        preflight['request']['headers'][2]['value'] = private_name
+        preflight['response']['headers'][0]['value'] = private_name
+        actual['request']['headers'][1]['name'] = private_name
+        self.assert_refused(self.run_tool('-o', self.destination),
+                            ['$.entries[1].request.headers[1]', '$.entries[1].response.mime'], private_name)
 
     def test_chrome_http2_windows_bytes_match_utf8_lf(self):
         text = json.dumps(chrome_http2_har(), indent=2)

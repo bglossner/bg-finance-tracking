@@ -1,4 +1,4 @@
 {
-  "example-checking": { "actualAccount": "Synthetic Checking", "last4": "1234", "filename": "checking-*.csv" },
-  "example-card": { "actualAccount": "Synthetic Card", "last4": "5678", "filename": "card-*.csv" }
+  "example-checking": { "actualAccount": "Synthetic Checking", "last4": "1234", "filename": "@(checking-*.csv|Chase1234_Activity*.[qQ][fF][xX])" },
+  "example-card": { "actualAccount": "Synthetic Card", "last4": "5678", "filename": "@(card-*.csv|Chase5678_Activity*.[qQ][fF][xX])" }
 }

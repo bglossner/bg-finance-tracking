@@ -50,6 +50,8 @@ Never commit real financial data or credentials. Keep exports, local account map
 
 ## Chase statements
 
+On Windows, [install the Chase QFX userscript](userscripts/README.md) to download activity from the signed-in dashboard.
+
 For private browser capture analysis, see the [Chase HAR skeleton guide](tools/HAR_SKELETON.md).
 
 Copy `config/accounts.example.json` to `config/accounts.json` and set each alias's

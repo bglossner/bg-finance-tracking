@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test dist/test/*.test.js",
+    "test": "npm run build && node --test dist/test/*.test.js test/userscript/*.test.js",
     "test:container": "BGFIN_CONTAINER_TESTS=1 node --test dist/test/*.test.js",
     "import": "node dist/src/inbox-cli.js"
   },

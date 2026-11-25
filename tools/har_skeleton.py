@@ -54,7 +54,7 @@ SCRIPT_MIMES = frozenset('''
     text/x-ecmascript text/x-javascript
 '''.split())
 WEB_MIMES = HTML_MIMES | SCRIPT_MIMES | {'text/css'}
-STATIC_TEXT_MIMES = WEB_MIMES | {'application/source-map', 'application/x-sourcemap'}
+STATIC_TEXT_MIMES = WEB_MIMES | {'application/source-map', 'application/x-sourcemap', 'image/svg+xml'}
 STATIC_BINARY_MIMES = {'application/wasm', 'application/font-woff', 'application/font-sfnt',
                        'application/vnd.ms-fontobject'}
 STATIC_BINARY_PREFIXES = ('audio/', 'font/', 'image/', 'video/')
@@ -113,7 +113,7 @@ JSON_KEY_LIMIT = 40
 KEY_TEMPLATES = frozenset({'<num-key>', '<key:email>', '<key:route>', '<key:opaque>', '<key:other>'})
 TAG_TEMPLATE = '<tag:opaque>'
 AUTH_ROUTE = re.compile(r'(?:^|[^a-z0-9])(?:log[-_]?(?:in|on)|sign[-_]?in|auth(?:entication|enticate)?|oauth2?|'
-                        r'sso|credentials|session|mfa|token|recover(?:y)?|reset[-_]?password)'
+                        r'sso|credentials|session|mfa|token|callback|recover(?:y)?|reset[-_]?password)'
                         r'(?:[^a-z0-9]|$)', re.I)
 SECRET_FIELD = re.compile(r'(?:^|[^a-z0-9])(?:password|passwd|passcode|pwd|pin|credential[s]?|'
                           r'secret[s]?|private|auth(?:entication|orization)?|bearer|token|csrf|xsrf|session|'
@@ -128,10 +128,15 @@ CDATA_TEXT = re.compile(r'<!\[CDATA\[(.*?)\]\]>', re.S)
 WEB_LITERAL = re.compile(r'''(?P<comment>/\*.*?\*/|//[^\r\n]*)|'''
                          r'''(?P<quoted>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)''', re.S)
 WEB_PROPERTY_END = re.compile(r'\s*:')
-ASSET_FIELD = re.compile(r'(?P<quote>["\']?)(?P<name>[A-Za-z_$][\w.$-]{0,127})(?P=quote)\s*[:=]\s*'
-                         r'(?P<value>"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|`(?:[^`\\]|\\.)*`|[0-9]+)')
-ASSET_MARKUP = re.compile(r'<(?:input|meta)\b[^>]{0,8192}>', re.I)
+ASSET_LITERAL = r'''"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`'''
+ASSET_FIELD = re.compile(rf'(?P<name>{ASSET_LITERAL}|[A-Za-z_$][\w.$-]{{0,127}})\s*[:=]\s*'
+                         rf'(?P<value>{ASSET_LITERAL}|[0-9]+)')
 ASSET_TOKEN = re.compile(r'''[^\s"'`=<>{}(),;!?]+''')
+ASSET_ESCAPE = re.compile(r'\\(?:u([0-9a-fA-F]{4})|x([0-9a-fA-F]{2})|([\\\'"`/]))')
+ASSET_HEADER_LITERALS = frozenset({'authorization', 'content-type', 'cookie', 'set-cookie',
+                                   'x-csrf-token', 'x-xsrf-token', 'x-device-id', 'x-session-id',
+                                   'x-api-key', 'x-access-key'})
+ASSET_HEADER_REGISTRY = re.compile(r'\b(?:headerNames|headersRegistry|HEADER_NAMES)\s*[:=]\s*\{[^{}]{0,4096}\Z')
 WEB_MIME_START = re.compile(r'''["'](?:content-type|accept)["']\s*:\s*\Z''', re.I)
 JS_ROUTE_START = re.compile(r'(?<![\w$.])(?:(?:(?:window|self|globalThis)\.)?fetch|'
                             r'new\s+(?:(?:window|self|globalThis)\.)?Request)\s*\(\s*\Z')
@@ -228,6 +233,10 @@ def strict_header_value(name):
     return name.lower() in STRICT_VALUE_HEADERS or secret_field(name)
 
 
+def source_path(path):
+    return tuple('*' if isinstance(part, int) else None if part == '*' else part for part in path)
+
+
 def sensitive_scalars(value, *, selective=False):
     for text in scalars(value):
         if (len(text) >= 8 or DIGITS.search(text)) and (not selective or looks_sensitive(text)):
@@ -235,7 +244,8 @@ def sensitive_scalars(value, *, selective=False):
 
 
 def raw_values(value, path=()):
-    entry_path = path[3:] if path[:3] == ('log', 'entries', '*') else None
+    entry_path = source_path(path[3:]) if path[:2] == ('log', 'entries') and (
+        len(path) >= 3 and isinstance(path[2], int)) else None
     if entry_path in PARSED_RAW_PATHS:
         # The body and pair parsers classify their originals and decoded values together.
         return
@@ -250,8 +260,8 @@ def raw_values(value, path=()):
                 continue
             yield from raw_values(child, (*path, key))
     elif isinstance(value, list):
-        for child in value:
-            yield from raw_values(child, (*path, '*'))
+        for index, child in enumerate(value):
+            yield from raw_values(child, (*path, index))
     else:
         kind = RAW_ENTRY_KINDS.get(entry_path, 'har-metadata')
         for text in sensitive_scalars(value):
@@ -425,7 +435,8 @@ def shaped_names(items, sources):
         shaped = name_shape(name)
         if shaped in KEY_TEMPLATES:
             templated[shaped] += 1
-            sources.remember(name, 'templated-name')
+            if not PATH.fullmatch(name):
+                sources.remember(name, 'templated-name')
             continue
         field = {'name': name}
         if hint is not None:
@@ -777,7 +788,7 @@ def remember_json_values(data, sources, *, strict=False):
         value, strict = pending.pop()
         if isinstance(value, dict):
             for name, child in value.items():
-                if not name.startswith('_') and name_shape(name) in KEY_TEMPLATES:
+                if not name.startswith('_') and not PATH.fullmatch(name) and name_shape(name) in KEY_TEMPLATES:
                     sources.remember(name, 'templated-name')
                 pending.append((child, strict or secret_field(name)))
         elif isinstance(value, list):
@@ -925,36 +936,49 @@ class AssetCredentialMarkup(HTMLParser):
         values = dict(attrs)
         for key, value in attrs:
             if value and secret_field(key):
-                self.sources.remember_secret(value, 'body-token')
+                remember_asset_secret(value, self.sources)
         if any(secret_field(values.get(key) or '') for key in ('name', 'id', 'property')):
             for key in ('value', 'content'):
                 if values.get(key):
-                    self.sources.remember_secret(values[key], 'body-token')
+                    remember_asset_secret(values[key], self.sources)
 
 
-def asset_credentials(text, sources):
+def decode_asset_escapes(text):
+    return ASSET_ESCAPE.sub(lambda m: m[3] or chr(int(m[1] or m[2], 16)), text)
+
+
+def remember_asset_secret(value, sources):
+    sources.remember_secret(value, 'body-token')
+    auth = re.fullmatch(r'(?:Bearer|Basic)\s+(\S+)\s*', value, re.I)
+    if auth:
+        sources.remember_secret(auth[1], 'body-token')
+
+
+def asset_credentials(text, sources, *, markup=False):
     # Scan credential values without collecting whole bundle lines or protocol literals.
     for match in ASSET_FIELD.finditer(text):
-        if secret_field(match['name']):
+        name = match['name'].strip('"\'`')
+        name = decode_asset_escapes(name)
+        if secret_field(name):
             literal = match['value']
             value = literal if literal.isdecimal() else literal[1:-1]
-            sources.remember_secret(value, 'body-token')
-            if literal.startswith('"') and '\\' in value:
-                try:
-                    sources.remember_secret(json.loads(literal), 'body-token')
-                except ValueError:
-                    pass
+            decoded = decode_asset_escapes(value)
+            before = text[max(0, match.start() - 4096):match.start()]
+            if decoded.lower() in ASSET_HEADER_LITERALS and ASSET_HEADER_REGISTRY.search(before):
+                continue
+            remember_asset_secret(value, sources)
+            if decoded != value:
+                remember_asset_secret(decoded, sources)
     for match in ASSET_TOKEN.finditer(text):
         value = match[0]
         if (len(value) >= 8 and not (PATH.fullmatch(value) or MIME.fullmatch(value.lower())
                                     or structured_origin(value.lower()))
-                and (DIGITS.search(value) or JWT.search(value) or has_email(value)
+                and (DIGITS.search(value) or JWT.search(value) or has_email(value) or PRIVATE_VALUE.search(value)
                      or opaque_alphanumeric(value, 'name') or blob_like(value, 'name'))):
             sources.remember(value, 'body-token')
-    if '<' in text:
+    if markup:
         parser = AssetCredentialMarkup(sources)
-        for match in ASSET_MARKUP.finditer(text):
-            parser.feed(match[0])
+        parser.feed(text)
         parser.close()
 
 
@@ -964,6 +988,13 @@ def tag_shape(name, *, ofx=False):
     if not TAG_NAME.fullmatch(name) or DIGIT.search(name) or any(suspect(name, 'body')):
         return TAG_TEMPLATE
     return name
+
+
+def shape_tag(name, sources, *, ofx=False):
+    shaped = tag_shape(name, ofx=ofx)
+    if shaped == TAG_TEMPLATE:
+        sources.remember(name, 'templated-name')
+    return shaped
 
 
 def xml_tags(text, sources):
@@ -986,7 +1017,7 @@ def xml_tags(text, sources):
     parser.ProcessingInstructionHandler = lambda _, value: remember_text(value, sources)
     parser.Parse(text, True)
     ofx = (next(iter(tags), '')).upper() == 'OFX'
-    return list(dict.fromkeys(tag_shape(name, ofx=ofx) for name in tags))
+    return list(dict.fromkeys(shape_tag(name, sources, ofx=ofx) for name in tags))
 
 
 def ofx_tags(text, sources):
@@ -1003,7 +1034,7 @@ def ofx_tags(text, sources):
         remember_text(html.unescape(gap), sources)
         if match['tag'] and not match['closing']:
             name = match['tag']
-            tags.setdefault(tag_shape(name, ofx=True), None)
+            tags.setdefault(shape_tag(name, sources, ofx=True), None)
         elif not match['tag']:
             remember_text(match['comment'] or match['cdata'] or '', sources)
         end = match.end()
@@ -1071,11 +1102,16 @@ def response_shape(response, sources, *, resource, request_path, strict):
     is_xml = (mime in ('text/xml', 'application/xml') or mime.endswith('+xml')) and mime not in HTML_MIMES
     qfx_filename = extension in ('.ofx', '.qfx')
     if not qfx_filename and static_response(mime, resource, request_path):
-        if text and mime not in STATIC_BINARY_MIMES and not mime.startswith(STATIC_BINARY_PREFIXES):
+        binary = mime not in STATIC_TEXT_MIMES and (
+            mime in STATIC_BINARY_MIMES or mime.startswith(STATIC_BINARY_PREFIXES))
+        if text and not binary:
             value = (base64.b64decode(text, validate=True).decode('utf-8', errors='replace')
                      if encoding == 'base64' else text)
-            asset_credentials(value, sources)
-        if not strict:
+            if is_json:
+                remember_json_values(parse_json(value), sources, strict=strict)
+            else:
+                asset_credentials(value, sources, markup=mime in HTML_MIMES or value.lstrip().startswith('<'))
+        if not strict or mime == 'image/svg+xml':
             text = ''
     if text and encoding == 'base64':
         sources.remember(text, 'body-text')

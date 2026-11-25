@@ -370,7 +370,7 @@ class HarSkeletonTests(unittest.TestCase):
 
     def test_credential_values_survive_selective_collection_and_shape_caps(self):
         word = 'accounts'
-        token = 'privateMarker'
+        token = 'SyntheticMarker'
         hidden = {'marker': ACCOUNT}
         for _ in range(12):
             hidden = {'child': hidden}
@@ -379,7 +379,7 @@ class HarSkeletonTests(unittest.TestCase):
         target = entry('https://asset.chase.com/api', text=json.dumps({f'{token}Copy': True, word: True}),
                        request_headers=[header('Cookie', f'demoSession={word}')])
         index = entry('https://secure.chase.com/index',
-                      text=json.dumps({'omittedBranch': hidden, 'displayLabel': token}))
+                      text=json.dumps({'omittedBranch': hidden, 'requestToken': token}))
         self.har['log']['entries'] = [script, target, index]
         module = runpy.run_path(str(SCRIPT))
         sources = module['InputValues'](self.har, diagnose=True)
@@ -404,8 +404,8 @@ class HarSkeletonTests(unittest.TestCase):
         marker = 'samplecode'
         echo = entry('https://secure.chase.com/api', text=json.dumps({marker: True}))
         callback = 'https://secure.chase.com/callback?code=samplecode&state=fakedemo'
-        for source in (entry(callback), entry('https://secure.chase.com/api',
-                                              request_headers=[header('Referer', callback)])):
+        for source in (entry(callback), entry('https://secure.chase.com/callback?code=samplecode'),
+                       entry('https://secure.chase.com/api', request_headers=[header('Referer', callback)])):
             self.har['log']['entries'] = [source, echo]
             self.assert_refused(self.run_tool('-o', self.destination),
                                 ['$.entries[1].response.body.fields[0].name'], marker)
@@ -416,17 +416,24 @@ class HarSkeletonTests(unittest.TestCase):
         target = entry('https://secure.chase.com/api', text=json.dumps({marker: True, short: True}))
         cases = (
             ('/dashboard', 'text/html', f'<input type="hidden" name="csrf" value="{marker}">'),
+            ('/dashboard', 'text/html', f'<input title="Show > hide" name="csrf" value="{marker}">'),
             ('/bootstrap', 'application/javascript', f'window.page = {{"csrf": "{marker}"}};'),
+            ('/bootstrap', 'application/javascript', f'const authorization = "Bearer {marker}";'),
+            ('/bootstrap', 'application/javascript', r"const password = 'fake\u006bey';"),
+            ('/bootstrap', 'application/javascript', 'const telemetry = "privateMarker";'),
             ('/scripts/example.map', 'application/json', f'{{"token":"{marker}"}}'),
+            ('/scripts/example.map', 'application/json', r'{"\u0063srf":"SyntheticMarker"}'),
+            ('/visual', 'image/svg+xml', f'<svg data-sessionid="{marker}"/>'),
             ('/auth/login', 'text/html', '<script type="application/json">'
                                        f'{{"password":"{short}"}}</script>'),
             ('/auth/login', 'application/javascript', f'window.page = {{password: "{short}"}};'),
         )
+        target['response']['content']['text'] = json.dumps({marker: True, short: True, 'privateMarker': True})
         for request_path, mime, text in cases:
             with self.subTest(mime=mime, request_path=request_path):
                 asset = entry('https://secure.chase.com' + request_path, mime=mime, text=text)
                 self.har['log']['entries'] = [target, asset]
-                field_index = 1 if short in text else 0
+                field_index = 2 if 'privateMarker' in text else (0 if marker in text else 1)
                 self.assert_refused(self.run_tool('-o', self.destination),
                                     [f'$.entries[0].response.body.fields[{field_index}].name'],
                                     marker, short)
@@ -461,6 +468,28 @@ class HarSkeletonTests(unittest.TestCase):
         self.har['log']['entries'] = [first]
         self.assert_refused(self.run_tool('-o', self.destination),
                             ['$.entries[0].response.body.fields[0].name'], original, original.lower())
+        first = entry('https://secure.chase.com/api', request_headers=[header(original.lower(), 'fake')],
+                      mime='application/xml', text=f'<root><{original}/></root>')
+        self.har['log']['entries'] = [first]
+        self.assert_refused(self.run_tool('-o', self.destination),
+                            ['$.entries[0].request.headers[0]'], original, original.lower())
+
+    def test_public_route_tables_and_header_registries_do_not_block_output(self):
+        path = '/api/accounts'
+        target = entry(f'https://secure.chase.com{path}', text=json.dumps({path: True}),
+                       request_headers=[header('Authorization', 'Bearer fake-challenge-token'),
+                                        header('X-Device-Id', 'fake-device-credential')])
+        asset = entry('https://static.chase.com/bundle', mime='application/javascript',
+                      text='const headerNames = {authorization: "Authorization", deviceId: "X-Device-Id"};')
+        self.har['log']['entries'] = [target, asset]
+        output = self.successful(self.run_tool())
+        first = output['entries'][0]
+        self.assertEqual(first['path'], path)
+        self.assertEqual(first['response']['body']['fields'], [{'name': '<key:route>', 'count_bucket': 'le-1'}])
+        self.assertEqual(first['request']['headers'], ['authorization', 'x-device-id'])
+        asset['response']['content']['text'] += 'const password = "Authorization";'
+        self.assert_refused(self.run_tool('-o', self.destination), ['$.entries[0].request.headers[0]'],
+                            'Authorization')
 
     def test_encoded_credential_text_remains_sensitive(self):
         text = 'aaaaaa'

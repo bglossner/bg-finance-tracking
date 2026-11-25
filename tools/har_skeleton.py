@@ -4,6 +4,7 @@
 import argparse
 import base64
 from collections import Counter, defaultdict
+from contextlib import nullcontext
 from datetime import datetime
 from email import policy
 from email.message import Message
@@ -20,6 +21,7 @@ import re
 import sys
 import tempfile
 from urllib.parse import parse_qsl, unquote, unquote_plus, urlsplit
+import warnings
 from xml.parsers import expat
 
 
@@ -167,6 +169,7 @@ class InputValues:
         self.short_secrets = set()
         self.raw_kinds = defaultdict(Counter) if diagnose else None
         self.parsed_kinds = defaultdict(set) if diagnose else None
+        self.short_kinds = defaultdict(set) if diagnose else None
         if diagnose:
             self.raw = Counter()
             for value, kind in raw_values(document):
@@ -192,12 +195,14 @@ class InputValues:
         if 0 < len(value) < 8:
             text = value.casefold()
             self.short_secrets.add(text)
-            if self.parsed_kinds is not None:
-                self.parsed_kinds[kind].add(text)
+            if self.short_kinds is not None:
+                self.short_kinds[kind].add(text)
         else:
             self.remember(value, kind)
 
-    def source_kinds(self, value):
+    def source_kinds(self, value, short):
+        if short:
+            return {kind for kind, values in self.short_kinds.items() if value in values}
         kinds = {kind for kind, values in self.parsed_kinds.items() if value in values}
         if self.raw[value] > 0:
             kinds.update(kind for kind, values in self.raw_kinds.items() if values[value] > 0)
@@ -989,20 +994,21 @@ def self_check(output, sources, diagnostics=None):
                 yield 'copied-input-value', ()
         else:
             kinds = set()
-            for source in set(matches):
-                kinds.update(sources.source_kinds(source))
+            for source, short in set(matches):
+                kinds.update(sources.source_kinds(source, short))
             if kinds:
                 yield 'copied-input-value', kinds
 
     def copied_values(value, field):
         lowered = value.casefold()
         if sources.short_secrets:
-            yield from matching_short_secrets(lowered, field, sources.short_secrets)
+            for source in matching_short_secrets(lowered, field, sources.short_secrets):
+                yield source, True
         allowed_copies = ('/<token>',) if field == 'path' else ()
         for index in range(len(lowered) - 3):
             for source in forbidden.get(lowered[index:index + 4], ()):
                 if source not in allowed_copies and lowered.startswith(source, index):
-                    yield source
+                    yield source, False
 
     scan(output, '$', '')
     return sorted(offenders)
@@ -1107,13 +1113,17 @@ def main():
     diagnostics = Diagnostics() if args.diagnose else None
     entry_count = None
     try:
-        document = parse_json(args.input.read_text(encoding='utf-8-sig'))
-        if args.diagnose:
-            log = require(require(document, dict)['log'], dict)
-            entry_count = len(require(log['entries'], list))
-        sources = InputValues(document, diagnose=args.diagnose)
-        outline = make_skeleton(document, include_host, sources)
-        offenders = self_check(outline, sources, diagnostics)
+        with warnings.catch_warnings() if args.diagnose else nullcontext():
+            if args.diagnose:
+                # Some parsers include input fragments in decoding warnings.
+                warnings.simplefilter('ignore')
+            document = parse_json(args.input.read_text(encoding='utf-8-sig'))
+            if args.diagnose:
+                log = require(require(document, dict)['log'], dict)
+                entry_count = len(require(log['entries'], list))
+            sources = InputValues(document, diagnose=args.diagnose)
+            outline = make_skeleton(document, include_host, sources)
+            offenders = self_check(outline, sources, diagnostics)
         if args.diagnose:
             payload = diagnostics.render(entry_count, len(offenders))
         elif offenders:

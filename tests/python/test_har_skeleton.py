@@ -142,9 +142,9 @@ class HarSkeletonTests(unittest.TestCase):
         self.destination = Path(self.directory.name) / 'out.json'
         self.har = synthetic_har()
 
-    def run_tool(self, *args, raw=None):
+    def run_tool(self, *args, raw=None, python_flags=()):
         self.source.write_text(json.dumps(self.har) if raw is None else raw, encoding='utf-8')
-        return subprocess.run([sys.executable, '-I', str(SCRIPT), str(self.source), *map(str, args)],
+        return subprocess.run([sys.executable, '-I', *python_flags, str(SCRIPT), str(self.source), *map(str, args)],
                               capture_output=True, text=True, timeout=10, check=False)
 
     def successful(self, result):
@@ -327,6 +327,33 @@ class HarSkeletonTests(unittest.TestCase):
         copied, = report['buckets']
         self.assertEqual((copied['rule'], copied['field_kind']), ('copied-input-value', 'origin'))
         self.assertEqual(copied['source_kinds'], {'cookie': 1})
+
+    def test_diagnose_separates_short_credential_and_substring_sources(self):
+        number = '7042'
+        first = entry('https://secure.chase.com/api', text=json.dumps({f'account{number}': True}),
+                      request_headers=[header('Cookie', f'syntheticSession={number}'),
+                                       header('X-Fake-Account', number)],
+                      response_headers=[header(number, 'fake')])
+        self.har['log']['entries'] = [first]
+        stdout, report = self.diagnose()
+        self.assertNotIn(number, stdout)
+        copied = {bucket['field_kind']: bucket['source_kinds'] for bucket in report['buckets']
+                  if bucket['rule'] == 'copied-input-value'}
+        self.assertEqual(copied, {
+            'json-key': {'header-value': 1},
+            'response.header-name': {'cookie': 1, 'header-value': 1},
+        })
+
+    def test_diagnose_suppresses_parser_warnings_with_input_fragments(self):
+        self.har['log']['entries'] = [
+            entry('https://secure.chase.com/download',
+                  response_headers=[header('Content-Disposition',
+                                           "attachment; filename*=unicode_escape''%5Cqa-synthetic.qfx")]),
+        ]
+        stdout, report = self.diagnose(python_flags=('-Wd',))
+        self.assertEqual(report['status'], 'complete')
+        self.assertNotIn(r'\q', stdout)
+        self.assertNotIn('synthetic.qfx', stdout)
 
     def test_diagnose_processing_failure_and_output_flags_are_safe(self):
         stdout, bad_json = self.diagnose(raw=f'{{"malformed":"{JWT}"')

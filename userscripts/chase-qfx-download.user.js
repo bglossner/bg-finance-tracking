@@ -8,9 +8,6 @@
 // @run-at       document-idle
 // ==/UserScript==
 
-// FIX: Remove extraneous logs I added
-// FIX: Add the ability to "Refresh" the `Chase QFX` modal in case of unexpected failure (like a refresh button in the blue part of the panel)
-
 (() => {
   "use strict";
 
@@ -191,15 +188,12 @@
         continue;
       const isDeposit = deposits.has(tile.tileId);
       const isCard = cards.has(tile.tileId);
-      const id = tile.accountId.toString();
+      const { accountId } = tile;
+      if (typeof accountId !== "string" && !Number.isFinite(accountId))
+        continue;
+      const id = String(accountId);
       const last4 = maskedSuffix(tile.mask);
-      if (
-        isDeposit === isCard ||
-        typeof id !== "string" ||
-        !id.trim() ||
-        !last4 ||
-        seen.has(id)
-      )
+      if (isDeposit === isCard || !id.trim() || !last4 || seen.has(id))
         continue;
       const family = isCard ? "card" : "deposit";
       const label = maskedLabel(family, tile.accountTileDetailType, tile.mask);
@@ -218,7 +212,32 @@
     return tokens[0];
   }
 
-  function isOfx(text, expectedFamily, expectedLast4) {
+  function ofxStatus(status) {
+    const fields =
+      /^\s*<CODE\s*>\s*(\d{1,6})\s*(?:<\/CODE\s*>)?\s*(?:<SEVERITY\s*>([^<]*)(?:<\/SEVERITY\s*>)?\s*)?(?:<MESSAGE\s*>[^<]*(?:<\/MESSAGE\s*>)?\s*)?$/i.exec(status);
+    if (!fields) return { ok: false, reason: "not-ofx" };
+    const code = Number(fields[1]);
+    const severity = fields[2]?.trim().toUpperCase();
+    if (code !== 0 || severity === "ERROR" || severity === "FATAL")
+      return { ok: false, reason: "status-error", code };
+    return severity === "INFO" || severity === "WARN"
+      ? { ok: true }
+      : { ok: false, reason: "not-ofx" };
+  }
+
+  function ofxPostedDate(transaction) {
+    const fields = [...transaction.matchAll(/<DTPOSTED\s*>([^<]*)/gi)];
+    if (fields.length !== 1) return undefined;
+    const date =
+      /^(\d{4})(\d{2})(\d{2})(?:\d{6}(?:\.\d+)?(?:\[[^\]]+\])?)?$/.exec(
+        fields[0][1].trim(),
+      );
+    return date ? `${date[1]}-${date[2]}-${date[3]}` : undefined;
+  }
+
+  function validateOfx(text, expectedFamily, expectedLast4, from, to) {
+    const invalid = { ok: false, reason: "not-ofx" };
+    const noStatement = { ok: false, reason: "no-statement" };
     const trimmed = text.trim();
     let root = trimmed;
     if (/^OFXHEADER:\s*\d+\b/i.test(trimmed)) {
@@ -227,47 +246,120 @@
         start < 0 ||
         !/^(?:[A-Z]+:[^<>\r\n]*\s*)+$/i.test(trimmed.slice(0, start))
       )
-        return false;
+        return invalid;
       root = trimmed.slice(start);
     }
-    if (!/^<OFX\s*>[^]*<\/OFX\s*>$/i.test(root)) return false;
+    root = /^<OFX\s*>([^]*)<\/OFX\s*>$/i.exec(root)?.[1];
+    if (root === undefined || /<\/?OFX\b|<!--|<!\[CDATA\[/i.test(root))
+      return invalid;
+
+    const signon =
+      /^\s*<SIGNONMSGSRSV1\s*>\s*<SONRS\s*>\s*<STATUS\s*>([^]*?)<\/STATUS\s*>([^]*?)<\/SONRS\s*>\s*<\/SIGNONMSGSRSV1\s*>/i.exec(root);
+    if (signon) {
+      const status = ofxStatus(signon[1]);
+      if (!status.ok) return status;
+      const fields = signon[2]
+        .replace(
+          /<FI\s*>(?:\s*<(ORG|FID)\s*>[^<]*(?:<\/\1\s*>)?)*\s*<\/FI\s*>/i,
+          "",
+        )
+        .replace(
+          /<(DTSERVER|USERKEY|TSKEYEXPIRE|LANGUAGE|DTPROFUP|DTACCTUP|SESSCOOKIE|INTU\.BID)\s*>[^<]*(?:<\/\1\s*>)?/gi,
+          "",
+        );
+      if (fields.trim()) return invalid;
+      root = root.slice(signon[0].length);
+      if (!root.trim()) return noStatement;
+    }
+    root = root.trim();
+
     const statements = [...root.matchAll(/<(STMTRS|CCSTMTRS)\s*>/gi)];
-    // FIX: Would be nice to differentiate between an error and just no statements
-    if (statements.length !== 1) return false;
-    const family =
-      statements[0][1].toUpperCase() === "CCSTMTRS" ? "card" : "deposit";
-    if (expectedFamily !== undefined && expectedFamily !== family) return false;
-    const envelope =
+    const messageSets =
+      root.match(/<(?:CREDITCARDMSGSRSV1|BANKMSGSRSV1)\s*>/gi) ?? [];
+    const responses = root.match(/<(?:CCSTMTTRNRS|STMTTRNRS)\s*>/gi) ?? [];
+    if (statements.length > 1 || messageSets.length > 1 || responses.length > 1)
+      return { ok: false, reason: "multiple-statements" };
+
+    const card =
+      /^<CREDITCARDMSGSRSV1\s*>\s*<CCSTMTTRNRS\s*>([^]*?)<\/CCSTMTTRNRS\s*>\s*<\/CREDITCARDMSGSRSV1\s*>$/i.exec(root);
+    const deposit =
+      /^<BANKMSGSRSV1\s*>\s*<STMTTRNRS\s*>([^]*?)<\/STMTTRNRS\s*>\s*<\/BANKMSGSRSV1\s*>$/i.exec(root);
+    const response = (card ?? deposit)?.[1];
+    if (response === undefined) return invalid;
+    const responseHeader =
+      /^\s*(?:<TRNUID\s*>[^<]*(?:<\/TRNUID\s*>)?\s*)?<STATUS\s*>([^]*?)<\/STATUS\s*>\s*(?:<CLTCOOKIE\s*>[^<]*(?:<\/CLTCOOKIE\s*>)?)?/i.exec(response);
+    if (!responseHeader) return invalid;
+    const status = ofxStatus(responseHeader[1]);
+    if (!status.ok) return status;
+    const family = card ? "card" : "deposit";
+    if (expectedFamily !== undefined && expectedFamily !== family)
+      return { ok: false, reason: "wrong-family" };
+
+    const content = response.slice(responseHeader[0].length).trim();
+    if (!content) return noStatement;
+    if (/<\/?STATUS\b/i.test(content)) return invalid;
+    const statement =
       family === "card"
-        ? /<CREDITCARDMSGSRSV1\s*>\s*<CCSTMTTRNRS\s*>[^]*?<CCSTMTRS\s*>([^]*?)<\/CCSTMTRS\s*>\s*<\/CCSTMTTRNRS\s*>\s*<\/CREDITCARDMSGSRSV1\s*>/i
-        : /<BANKMSGSRSV1\s*>\s*<STMTTRNRS\s*>[^]*?<STMTRS\s*>([^]*?)<\/STMTRS\s*>\s*<\/STMTTRNRS\s*>\s*<\/BANKMSGSRSV1\s*>/i;
+        ? /^<CCSTMTRS\s*>([^]*?)<\/CCSTMTRS\s*>$/i.exec(content)
+        : /^<STMTRS\s*>([^]*?)<\/STMTRS\s*>$/i.exec(content);
+    const statementTags = root.match(/<\/?(?:CCSTMTRS|STMTRS)\b[^>]*>/gi) ?? [];
+    if (!statement || statementTags.length !== 2) return invalid;
+
+    const body = statement[1];
     const account =
       family === "card"
         ? /^\s*<CURDEF\s*>\s*[A-Z]{3}\s*(?:<\/CURDEF\s*>)?\s*<CCACCTFROM\s*>([^]*?)<\/CCACCTFROM\s*>/i
         : /^\s*<CURDEF\s*>\s*[A-Z]{3}\s*(?:<\/CURDEF\s*>)?\s*<BANKACCTFROM\s*>([^]*?)<\/BANKACCTFROM\s*>/i;
-    const accountFields = account.exec(envelope.exec(root)?.[1] ?? "")?.[1];
-    if (accountFields === undefined) return false;
-    if (expectedLast4 !== undefined) {
-      const ids = [...root.matchAll(/<ACCTID\s*>([^<]*)/gi)];
-      const accountId =
-        /<ACCTID\s*>([^<]*)/i.exec(accountFields)?.[1].trim() ?? "";
-      const suffix = /^[0-9Xx*]*(\d{4})$/.exec(accountId)?.[1];
-      // FIX: This check is failing. account IDs can be `<ACCOUNT_ID>` format or `<ACCOUNT_ID>-<LAST_4>`
-      if (ids.length !== 1 || suffix !== expectedLast4) return false;
-    }
-    const statuses = [...root.matchAll(/<STATUS\s*>([^]*?)<\/STATUS\s*>/gi)];
-    return (
-      statuses.length > 0 &&
-      statuses.length === (root.match(/<STATUS\s*>/gi) ?? []).length &&
-      statuses.every(([, status]) => {
-        const codes = [...status.matchAll(/<CODE\s*>([^<\r\n]*)/gi)];
-        return (
-          codes.length === 1 &&
-          /^0+$/.test(codes[0][1].trim()) &&
-          !/<SEVERITY\s*>\s*(?:ERROR|FATAL)\b/i.test(status)
-        );
-      })
+    const accountMatch = account.exec(body);
+    if (!accountMatch) return invalid;
+    const ids = root.match(/<ACCTID\s*>/gi) ?? [];
+    const accountId =
+      /<ACCTID\s*>([^<]*)/i.exec(accountMatch[1])?.[1].trim() ?? "";
+    const suffix = /^(?:[0-9Xx*]+-|[0-9Xx*]*)(\d{4})$/.exec(accountId)?.[1];
+    if (
+      ids.length !== 1 ||
+      !suffix ||
+      (expectedLast4 !== undefined && suffix !== expectedLast4)
+    )
+      return { ok: false, reason: "wrong-account" };
+
+    const activity = body.slice(accountMatch[0].length);
+    const list = /^\s*<BANKTRANLIST\s*>([^]*?)<\/BANKTRANLIST\s*>/i.exec(activity);
+    const listTags = body.match(/<\/?BANKTRANLIST\b[^>]*>/gi) ?? [];
+    if (listTags.length && (listTags.length !== 2 || !list)) return invalid;
+    const transactionList = (list?.[1] ?? "").replace(
+      /^\s*<DTSTART\s*>[^<]+(?:<\/DTSTART\s*>)?\s*<DTEND\s*>[^<]+(?:<\/DTEND\s*>)?/i,
+      "",
     );
+    const transactionPattern = /<STMTTRN\s*>([^]*?)<\/STMTTRN\s*>/gi;
+    const transactions = [...transactionList.matchAll(transactionPattern)];
+    const transactionTags = root.match(/<\/?STMTTRN\b[^>]*>/gi) ?? [];
+    if (
+      transactions.length * 2 !== transactionTags.length ||
+      transactionList.replace(transactionPattern, "").trim()
+    )
+      return invalid;
+    const dates = transactions.map(([, transaction]) =>
+      ofxPostedDate(transaction),
+    );
+    if (dates.some((date) => !validDate(date))) return invalid;
+    const remainder = activity
+      .slice(list?.[0].length ?? 0)
+      .replace(
+        /<(LEDGERBAL|AVAILBAL)\s*>(?:\s*<(BALAMT|DTASOF)\s*>[^<]*(?:<\/\2\s*>)?)*\s*<\/\1\s*>/gi,
+        "",
+      )
+      .replace(/<MKTGINFO\s*>[^<]*(?:<\/MKTGINFO\s*>)?/i, "");
+    if (remainder.trim()) return invalid;
+    if (
+      !dates.some(
+        (date) =>
+          (from === undefined || date >= from) &&
+          (to === undefined || date <= to),
+      )
+    )
+      return { ok: false, reason: "no-transactions" };
+    return { ok: true };
   }
 
   if (typeof window === "undefined") {
@@ -282,7 +374,7 @@
         maskedLabel,
         readAccounts,
         readCsrfToken,
-        isOfx,
+        validateOfx,
       };
     }
     return;
@@ -302,8 +394,7 @@
   }
 
   function chaseFetch({ path, ...options }, visit) {
-    if (!isActive(visit))
-      throw new Error("Open the signed-in Chase dashboard.");
+    if (!isActive(visit)) throw new Error("Open the signed-in Chase dashboard.");
     const defaultHeaders =
       options.method === "POST" ? { "x-jpmc-csrf-token": "NONE" } : undefined;
     return fetch(new URL(path, origin), {
@@ -339,11 +430,17 @@
       downloadRequest(current, from, to, readCsrfToken(payload)),
       visit,
     );
-    if (!response.ok) throw new Error("Chase download request failed.");
     const blob = await response.blob();
-    return isOfx(await blob.text(), account.family, account.last4)
-      ? blob
-      : null;
+    const result = validateOfx(
+      await blob.text(),
+      account.family,
+      account.last4,
+      from,
+      to,
+    );
+    if (!response.ok && result.reason !== "status-error")
+      throw new Error("Chase download request failed.");
+    return result.ok ? { ...result, blob } : result;
   }
 
   async function dateKey(id) {
@@ -391,29 +488,48 @@
     return new Promise((resolve) => setTimeout(resolve, delayMs));
   }
 
+  function validationMessage({ reason, code }) {
+    switch (reason) {
+      case "no-statement":
+      case "no-transactions":
+        return "No transactions in this date range.";
+      case "status-error":
+        return `Chase returned an error (code ${code}). No file was sent.`;
+      case "wrong-family":
+      case "wrong-account":
+        return "Chase returned a different account or account type. No file was sent.";
+      case "multiple-statements":
+        return "Chase returned multiple statements. No file was sent.";
+      default:
+        return "Chase did not return a valid QFX. No file was sent.";
+    }
+  }
+
   async function downloadOne(row, from, to, visit) {
     row.save.hidden = true;
     row.pendingEnd = null;
-    let message;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    const failure =
+      "Download failed. Check the Chase session and date range. No file was sent.";
+    for (let attempt = 0; attempt < 2 && isActive(visit); attempt += 1) {
+      let result;
       try {
-        const blob = await getQfx(row.account, from, to, visit);
-        if (blob && isActive(visit)) {
-          downloadBlob(blob, filename(row.account.last4, from, to));
-          row.pendingEnd = to;
-          row.save.hidden = false;
-          return `Check Downloads for the file covering ${from} to ${to}.`;
-        }
-        message =
-          "Chase returned an invalid QFX, an OFX error, or a different account. No file was sent.";
+        result = await getQfx(row.account, from, to, visit);
       } catch {
-        message =
-          "Download failed. Check the Chase session and date range. No file was sent.";
+        if (attempt === 0 && isActive(visit)) await delay();
+        continue;
       }
       if (!isActive(visit)) break;
-      if (attempt === 0) await delay();
+      if (!result.ok) return validationMessage(result);
+      try {
+        downloadBlob(result.blob, filename(row.account.last4, from, to));
+      } catch {
+        return failure;
+      }
+      row.pendingEnd = to;
+      row.save.hidden = false;
+      return `Check Downloads for the file covering ${from} to ${to}.`;
     }
-    return message;
+    return failure;
   }
 
   function element(tag, text) {
@@ -447,6 +563,7 @@
     *, *::before, *::after { box-sizing: border-box; }
     details { background: #fff; border: 1px solid #a6b8c8; border-radius: .6rem; box-shadow: 0 4px 18px #112b4526; }
     summary { background: #064b83; color: #fff; font-weight: 650; cursor: pointer; padding: .65rem .9rem; border-radius: .5rem; }
+    details[open] > summary { padding-right: 6rem; }
     section { width: min(22rem, calc(100vw - 2rem)); max-height: min(72vh, 34rem); overflow: auto; padding: .9rem; }
     fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
     article { padding: .75rem 0; border-top: 1px solid #d5dfe8; }
@@ -458,6 +575,9 @@
     button { cursor: pointer; }
     button:disabled { opacity: .55; cursor: default; }
     .primary { background: #064b83; color: #fff; border-color: #064b83; }
+    .refresh { position: absolute; top: .34rem; right: .55rem; padding: .25rem .55rem; background: #064b83; color: #fff; border-color: #c1ddf0; }
+    .refresh:focus-visible { outline-color: #fff; }
+    details:not([open]) + .refresh { display: none; }
     .save { margin-left: .4rem; }
     :focus-visible { outline: 2px solid #1670b8; outline-offset: 2px; }
     summary:focus-visible { outline-offset: -4px; outline-color: #fff; }
@@ -468,6 +588,9 @@
   shadow.adoptedStyleSheets = [styles];
   const disclosure = element("details");
   const panel = element("section");
+  const refresh = button("Refresh");
+  refresh.className = "refresh";
+  refresh.setAttribute("aria-label", "Refresh Chase accounts");
   const allButton = button("Download all");
   allButton.className = "primary";
   allButton.hidden = true;
@@ -476,7 +599,7 @@
   const fields = element("fieldset");
   panel.append(allButton, status, fields);
   disclosure.append(element("summary", "Chase QFX"), panel);
-  shadow.append(disclosure);
+  shadow.append(disclosure, refresh);
   document.body.append(host);
 
   const rows = [];
@@ -485,15 +608,20 @@
   let busy = false;
   let dashboardVisit = new AbortController();
 
+  function resetPanel() {
+    dashboardVisit.abort();
+    loading = loaded = false;
+    rows.length = 0;
+    allButton.hidden = true;
+    status.textContent = "";
+    fields.replaceChildren();
+  }
+
   function syncPanelVisibility() {
     host.hidden = !onDashboard();
     if (host.hidden) {
-      dashboardVisit.abort();
+      resetPanel();
       disclosure.open = false;
-      loaded = false;
-      rows.length = 0;
-      allButton.hidden = true;
-      fields.replaceChildren();
     } else if (dashboardVisit.signal.aborted) {
       dashboardVisit = new AbortController();
     }
@@ -507,13 +635,14 @@
       from: row.from.value,
       to: row.to.value,
     }));
-    busy = allButton.disabled = fields.disabled = true;
+    busy = allButton.disabled = fields.disabled = refresh.disabled = true;
     status.textContent = "Requesting QFX downloads…";
     try {
       await navigator.locks.request(
         storagePrefix,
         { ifAvailable: true },
         async (lock) => {
+          if (!isActive(visit)) return;
           if (!lock) {
             status.textContent =
               "A Chase QFX download is running in another tab.";
@@ -541,7 +670,7 @@
         status.textContent =
           "Could not start the download. Reload the Chase dashboard and try again.";
     } finally {
-      busy = allButton.disabled = fields.disabled = false;
+      busy = allButton.disabled = fields.disabled = refresh.disabled = false;
     }
   }
 
@@ -585,13 +714,15 @@
   }
 
   async function loadAccounts() {
-    console.log("Attempting to load accounts");
     const visit = dashboardVisit.signal;
     if (!isActive(visit) || !disclosure.open || loaded || loading) return;
     loading = true;
     status.textContent = "Loading Chase accounts…";
     try {
-      const accounts = readAccounts(await getAccountData(visit));
+      const payload = await getAccountData(visit);
+      if (!isActive(visit)) return;
+      const accounts = readAccounts(payload);
+      readCsrfToken(payload);
       const today = localToday();
       const entries = await Promise.all(
         accounts.map((account) => makeRow(account, today)),
@@ -601,28 +732,28 @@
         rows.push(row);
         fields.append(article);
       }
-      console.log("accounts", accounts, entries);
       allButton.hidden = rows.length === 0;
       status.textContent = rows.length
         ? ""
         : "Chase returned no eligible deposit or credit card accounts.";
       loaded = rows.length > 0;
-    } catch (e) {
-      console.error("Userscript loadAccounts error", e);
+    } catch {
       if (isActive(visit))
         status.textContent =
-          "Could not load accounts. Check the Chase session, then close and reopen this panel.";
+          "Could not load accounts. Check the Chase session, then select Refresh.";
     } finally {
-      loading = false;
-      if (visit.aborted) void loadAccounts();
+      if (dashboardVisit.signal === visit) loading = false;
     }
   }
 
+  refresh.addEventListener("click", () => {
+    if (busy || !onDashboard() || !disclosure.open) return;
+    resetPanel();
+    dashboardVisit = new AbortController();
+    void loadAccounts();
+  });
   allButton.addEventListener("click", () => void run(rows));
   disclosure.addEventListener("toggle", () => void loadAccounts());
-  window.navigation?.addEventListener(
-    "currententrychange",
-    syncPanelVisibility,
-  );
+  window.navigation?.addEventListener("currententrychange", syncPanelVisibility);
   window.addEventListener("popstate", syncPanelVisibility);
 })();

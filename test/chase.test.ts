@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { validateParserResult } from '../src/importers/actual-file-parser.js';
-import { chase, normalizeCsv, normalizeOfx, ofxAccountSuffix, parseAccounts, routeAccount, toCents } from '../src/importers/chase.js';
+import { chase, matchStatement, normalizeCsv, normalizeOfx, ofxAccountSuffix, parseAccounts, routeAccount, toCents } from '../src/importers/chase.js';
 
 const routes = parseAccounts(JSON.stringify({
   checking: { actualAccount: 'Synthetic Checking', last4: '1234', filename: 'checking-*.csv' },
@@ -40,6 +40,18 @@ test('reads only the last four account digits and rejects multiple account aggre
   assert.equal(ofxAccountSuffix(Buffer.from(contents.replace('<ACCTID>0000001234', ''))), undefined);
   assert.throws(() => ofxAccountSuffix(Buffer.from(contents.replaceAll('BANKACCTFROM', 'CCACCTFROM'))), /single checking or card/);
   assert.throws(() => ofxAccountSuffix(Buffer.from(contents.replace('0000001234', '0000001234<ACCTID>0000005678'))), /single checking or card/);
+});
+
+test('routes a hyphenated ACCTID by its explicit suffix and rejects malformed suffixes', async () => {
+  const contents = await readFile(fixture('checking-synthetic.qfx'), 'utf8');
+  const withId = (id: string) => Buffer.from(contents.replace('0000001234', id));
+  for (const id of ['0000005678-1234', 'Xx**-1234']) {
+    assert.equal(matchStatement(routes, 'renamed.qfx', withId(id)), 'checking');
+    assert.throws(() => matchStatement(routes, 'renamed.qfx', withId(id), 'card'), /conflicts/);
+  }
+  for (const id of ['0000005678-01234', '0000005678-234', '0000-5678-1234', '-1234']) {
+    assert.throws(() => matchStatement(routes, 'renamed.qfx', withId(id), 'checking'), /Invalid statement account/);
+  }
 });
 
 test('keeps duplicate CSV rows distinct and stable when other rows reorder', () => {

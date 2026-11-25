@@ -8,7 +8,7 @@ const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
 const module = { exports: {} };
 runInNewContext(read('../../userscripts/chase-qfx-download.user.js'), { module, URLSearchParams });
 const { localToday, defaultRange, validRange, filename, accountListRequest, downloadRequest,
-  maskedLabel, readAccounts, readCsrfToken, isOfx } = module.exports;
+  maskedLabel, readAccounts, readCsrfToken, validateOfx } = module.exports;
 const capture = JSON.parse(read('../../import-docs/chase/chase.json')).requests.map(entry => entry.request);
 const from = '2024-02-27';
 const to = '2024-03-02';
@@ -118,6 +118,21 @@ test('account selection follows deposit/card tile groups and extracts the fresh 
   assert.throws(() => readCsrfToken({ cache: [] }), /session token/i);
 });
 
+test('skips tiles without a usable account ID and keeps numeric and string IDs', () => {
+  const accountTiles = [
+    { tileId: 'missing' },
+    { tileId: 'null', accountId: null },
+    { tileId: 'object', accountId: {} },
+    { tileId: 'boolean', accountId: false },
+    { tileId: 'blank', accountId: ' ' },
+    { tileId: 'number', accountId: 123 },
+    { tileId: 'string', accountId: 'opaque' },
+  ].map(tile => ({ ...tile, mask: 'XXXX5678' }));
+  const personalTileGroups = [{ creditCardAccountTileIds: accountTiles.map(tile => tile.tileId) }];
+  const accounts = readAccounts({ cache: [{ response: { accountTiles, personalTileGroups } }] });
+  assert.equal(JSON.stringify(accounts.map(entry => entry.id)), '["123","opaque"]');
+});
+
 test('masked labels expose at most the last four digits and no arbitrary display text', () => {
   assert.equal(maskedLabel('deposit', 'SAVINGS', '9999 9999 9999 1234'), 'Savings …1234');
   assert.equal(maskedLabel('card', '<img src=x>', '**** 5678'), 'Credit card …5678');
@@ -126,42 +141,113 @@ test('masked labels expose at most the last four digits and no arbitrary display
 });
 
 const ok = '<STATUS><CODE>0\n<SEVERITY>INFO\n</STATUS>';
-const emptyCardStatement = `<CREDITCARDMSGSRSV1><CCSTMTTRNRS>${ok}<CCSTMTRS><CURDEF>USD</CURDEF>` +
-  '<CCACCTFROM><ACCTID>XXXX5678</ACCTID></CCACCTFROM><BANKTRANLIST></BANKTRANLIST>' +
-  '</CCSTMTRS></CCSTMTTRNRS></CREDITCARDMSGSRSV1>';
+const signonResponse = status => `<SIGNONMSGSRSV1><SONRS>${status}<DTSERVER>20240302<LANGUAGE>ENG</SONRS></SIGNONMSGSRSV1>`;
+const signon = signonResponse(ok);
+const cardResponse = body => `<CREDITCARDMSGSRSV1><CCSTMTTRNRS>${body}</CCSTMTTRNRS></CREDITCARDMSGSRSV1>`;
+const transaction = '<STMTTRN><DTPOSTED>20240302</DTPOSTED><TRNAMT>-1.00</TRNAMT><FITID>fake-1</FITID></STMTTRN>';
+const cardStatement = cardResponse(`${ok}<CCSTMTRS><CURDEF>USD</CURDEF>` +
+  '<CCACCTFROM><ACCTID>XXXX5678</ACCTID></CCACCTFROM>' +
+  `<BANKTRANLIST>${transaction}</BANKTRANLIST></CCSTMTRS>`);
 
-test('accepts both reference envelopes and a headerless statement with no transactions', () => {
-  assert.equal(isOfx(read('../../import-docs/chase/credit-qfx.data'), 'card'), true);
-  assert.equal(isOfx(read('../../import-docs/chase/non-credit-qfx.data'), 'deposit'), true);
-  assert.equal(isOfx(`<OFX>${emptyCardStatement}</OFX>`, 'card'), true);
-  assert.equal(isOfx(`<OFX>${emptyCardStatement}</OFX>`, 'deposit'), false);
+function assertValidation(text, expected, ...args) {
+  assert.deepEqual({ ...validateOfx(text, ...args) }, expected);
+}
+
+test('accepts both reference envelopes and a headerless statement', () => {
+  assertValidation(read('../../import-docs/chase/credit-qfx.data'), { ok: true }, 'card', '5678');
+  assertValidation(read('../../import-docs/chase/non-credit-qfx.data'), { ok: true }, 'deposit', '1234');
+  assertValidation(`<OFX>${cardStatement}</OFX>`, { ok: true }, 'card', '5678', from, to);
+  assertValidation(`<OFX>${cardStatement}</OFX>`, { ok: false, reason: 'wrong-family' }, 'deposit');
+});
+
+test('distinguishes a successful response without a statement or in-range transactions', () => {
+  assertValidation(`<OFX>${signon}</OFX>`, { ok: false, reason: 'no-statement' }, 'card', '5678');
+  assertValidation(`<OFX>${cardResponse(ok)}</OFX>`, { ok: false, reason: 'no-statement' }, 'card', '5678');
+  assertValidation(`<OFX>${cardResponse(ok)}</OFX>`, { ok: false, reason: 'wrong-family' }, 'deposit');
+  for (const statement of [
+    cardStatement.replace(transaction, ''),
+    cardStatement.replace(transaction, '<DTSTART>20240227\n<DTEND>20240302\n')
+      .replace('</CCSTMTRS>', '<LEDGERBAL><BALAMT>0.00<DTASOF>20240302</LEDGERBAL></CCSTMTRS>'),
+    cardStatement.replace(`<BANKTRANLIST>${transaction}</BANKTRANLIST>`, ''),
+    cardStatement.replace('20240302', '20240303'),
+    cardStatement.replace('20240302', '20240226'),
+  ]) {
+    assertValidation(`<OFX>${statement}</OFX>`, { ok: false, reason: 'no-transactions' }, 'card', '5678', from, to);
+  }
+  assertValidation(`<OFX>${cardStatement.replace('20240302', '20240227')}</OFX>`, { ok: true }, 'card', '5678', from, to);
+  assertValidation(`<OFX>${cardStatement.replace(transaction, '')}</OFX>`, { ok: false, reason: 'wrong-account' }, 'card', '1234');
 });
 
 test('rejects HTML, JSON and incomplete OFX envelopes', () => {
   for (const response of [
     '<!doctype html><h1>Sign in</h1>', '{"error":"session expired"}', 'OFXHEADER:100\n<html>Sign in</html>',
-    `OFXHEADER:100\n<html><OFX>${emptyCardStatement}</OFX>`, `<OFX>${emptyCardStatement}`, `<OFX>${emptyCardStatement}</OFX>junk`,
-    `<OFX><SIGNONMSGSRSV1><SONRS>${ok}</SONRS></SIGNONMSGSRSV1></OFX>`,
-    `<OFX><CREDITCARDMSGSRSV1><CCSTMTTRNRS>${ok}<CCSTMTRS></CCSTMTRS></CCSTMTTRNRS></CREDITCARDMSGSRSV1></OFX>`,
-    `<OFX>${emptyCardStatement}${emptyCardStatement}</OFX>`,
+    `OFXHEADER:100\n<html><OFX>${cardStatement}</OFX>`, `<OFX>${cardStatement}`, `<OFX>${cardStatement}</OFX>junk`,
+    `<OFX>${signon}<UNKNOWN></UNKNOWN></OFX>`,
+    `<OFX>${signon.replace('</SONRS>', '<HTML></HTML></SONRS>')}</OFX>`,
+    `<OFX>${cardResponse(`${ok}<HTML></HTML>`)}</OFX>`,
+    `<OFX>${cardStatement.replace('<CCSTMTRS>', '<OTHER><CCSTMTRS>').replace('</CCSTMTRS>', '</CCSTMTRS></OTHER>')}</OFX>`,
+    `<OFX>${cardResponse(`${ok}<CCSTMTRS></CCSTMTRS>`)}</OFX>`,
+    `<OFX>${cardResponse(`${ok}<CCSTMTRS />`)}</OFX>`,
+    `<OFX>${cardStatement.replace(ok, '')}</OFX>`,
+    `<OFX>${cardStatement.replace('</STMTTRN>', '')}</OFX>`,
+    `<OFX>${cardStatement.replace('</BANKTRANLIST>', '')}</OFX>`,
+    `<OFX>${cardStatement.replace(transaction, '<HTML></HTML>')}</OFX>`,
+    `<OFX>${cardStatement.replace(transaction, `<OTHER>${transaction}</OTHER>`)}</OFX>`,
+    `<OFX>${cardStatement.replace(`<BANKTRANLIST>${transaction}</BANKTRANLIST>`, '<HTML></HTML>')}</OFX>`,
+    `<OFX>${cardStatement.replace('</BANKTRANLIST>', '</BANKTRANLIST><HTML>')}</OFX>`,
+    `<OFX>${cardStatement.replace('20240302', '20240230')}</OFX>`,
+    `<OFX>${cardStatement.replace(transaction, '<!-- <STMTTRN></STMTTRN> -->')}</OFX>`,
   ]) {
-    assert.equal(isOfx(response), false);
+    assertValidation(response, { ok: false, reason: 'not-ofx' });
   }
+  assertValidation(`<OFX>${cardStatement}${cardStatement}</OFX>`, { ok: false, reason: 'multiple-statements' });
 });
 
-test('rejects OFX error statuses, including errors outside the statement', () => {
-  for (const badStatus of [
-    '<STATUS><CODE>15500\n<SEVERITY>ERROR\n</STATUS>', '<STATUS><CODE>0<SEVERITY>ERROR</STATUS>',
-    '<STATUS><CODE>0', '<STATUS><CODE>0<CODE>1</STATUS>',
+test('reports only the numeric OFX error code, including errors without a statement', () => {
+  for (const [badStatus, code] of [
+    ['<STATUS><CODE>15500\n<SEVERITY>ERROR\n<MESSAGE>Private details\n</STATUS>', 15500],
+    ['<STATUS><CODE>0</CODE><SEVERITY>ERROR</SEVERITY></STATUS>', 0],
+    ['<STATUS><CODE>2000<SEVERITY>WARN</STATUS>', 2000],
   ]) {
-    assert.equal(isOfx(`<OFX>${emptyCardStatement}${badStatus}</OFX>`), false);
+    assertValidation(`<OFX>${cardResponse(badStatus)}</OFX>`, { ok: false, reason: 'status-error', code });
+    assertValidation(`<OFX>${signonResponse(badStatus)}${cardStatement}</OFX>`, { ok: false, reason: 'status-error', code });
+    assertValidation(`<OFX><HTML>${badStatus}</HTML></OFX>`, { ok: false, reason: 'not-ofx' });
+  }
+  for (const badStatus of [
+    '<STATUS><CODE>0', '<STATUS><CODE>0<CODE>1</STATUS>',
+    '<STATUS><CODE>0<SEVERITY>UNKNOWN</STATUS>',
+    '<STATUS><CODE>123456789<SEVERITY>ERROR</STATUS>',
+    '<STATUS><CODE>15500 payload<SEVERITY>ERROR</STATUS>',
+    '<STATUS><CODE>0<SEVERITY>INFO<HTML></HTML></STATUS>',
+  ]) {
+    assertValidation(`<OFX>${signonResponse(badStatus)}${cardStatement}</OFX>`, { ok: false, reason: 'not-ofx' });
   }
 });
 
 test('a downloaded OFX must identify the same account suffix as the selected row', () => {
-  const ofx = `<OFX>${emptyCardStatement}</OFX>`;
-  assert.equal(isOfx(ofx, 'card', '5678'), true);
-  assert.equal(isOfx(ofx, 'card', '1234'), false);
-  assert.equal(isOfx(ofx.replace('<ACCTID>XXXX5678</ACCTID>', ''), 'card', '5678'), false);
-  assert.equal(isOfx(ofx.replace('</CCSTMTRS>', '<ACCTID>XXXX5678</ACCTID></CCSTMTRS>'), 'card', '5678'), false);
+  const ofx = `<OFX>${cardStatement}</OFX>`;
+  const mismatch = { ok: false, reason: 'wrong-account' };
+  assertValidation(ofx, { ok: true }, 'card', '5678');
+  assertValidation(ofx, mismatch, 'card', '1234');
+  assertValidation(ofx.replace('<ACCTID>XXXX5678</ACCTID>', ''), mismatch, 'card', '5678');
+  assertValidation(ofx.replace('</CCSTMTRS>', '<ACCTID>XXXX5678</ACCTID></CCSTMTRS>'), mismatch, 'card', '5678');
 });
+
+for (const [identifier, expectedLast4, accepted] of [
+  ['12345678', '5678', true],
+  ['12345678-9012', '9012', true],
+  ['12345678-9012', '5678', false],
+  ['Xx**5678', '5678', true],
+  ['Xx**-5678', '5678', true],
+  ['12345678-05678', '5678', false],
+  ['12345678-678', '5678', false],
+  ['1234-56-5678', '5678', false],
+  ['-5678', '5678', false],
+  ['ID5678', '5678', false],
+  ['', '5678', false],
+]) {
+  test(`checks the selected suffix for synthetic ACCTID ${JSON.stringify(identifier)} against ${expectedLast4}`, () => {
+    const ofx = `<OFX>${cardStatement.replace('XXXX5678', identifier)}</OFX>`;
+    assertValidation(ofx, accepted ? { ok: true } : { ok: false, reason: 'wrong-account' }, 'card', expectedLast4);
+  });
+}

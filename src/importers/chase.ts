@@ -73,7 +73,7 @@ export function ofxAccountSuffix(contents: Buffer): string | undefined {
     throw new Error('Expected a single checking or card account in the statement.');
   }
   if (!identifier) return undefined;
-  const suffix = /^(?:\d|[Xx*])*([0-9]{4})$/.exec(identifier)?.[1];
+  const suffix = /^(?:[0-9Xx*]+-|[0-9Xx*]*)(\d{4})$/.exec(identifier)?.[1];
   if (!suffix) throw new Error('Invalid statement account identifier.');
   return suffix;
 }

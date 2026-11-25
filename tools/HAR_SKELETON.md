@@ -40,9 +40,17 @@ python3 -I -B -m unittest discover -s tests/python -v
 
 The output drops literal query and body values, cookie names and values, authentication values, filenames, absolute timestamps, IP and connection metadata, detailed timings, page titles, comments, and private HAR metadata. It also drops JSON body keys that start with `_`. The tool recognizes plain and base64-encoded HAR response bodies for supported formats when the export includes them.
 
+## What the self-check verifies
+
+Before writing, the tool checks retained strings, including header names, parameter names, JSON keys and OFX tags, for copies of collected input values. It collects header values, cookie names and values, query and form values, complete query strings, JSON scalar values, body text tokens, and URL path segments replaced by placeholders. It checks copies of eight or more characters, digit runs of four or more digits, and shorter credential parts in retained names and other structural fields.
+
+The check also looks for email addresses, dates, amounts, JWTs and token-like base64. It recognizes the tool's generated hints and buckets, conventional structural names, and exact first-party hostname and origin spellings. It still checks retained names and hosts for sensitive patterns and embedded values. A refusal writes no skeleton and reports only field positions.
+
 ## Review and delete
 
-Open the output locally in a text editor before sharing. Look at every origin, path, name, MIME token, and filename extension. Check for session and device identifiers, names, email addresses, account numbers or suffixes, balances, transactions, and other private data. The automated check can refuse a capture with legitimate names that resemble secrets, including long runs of unfamiliar path segments. Its diagnostics identify fields by position. If the command refuses output or the review finds private data, keep the files local and recapture a narrower sequence. Short strings and information embedded in names, counts, or request ordering can escape the checks. A successful run leaves the source HAR sensitive.
+If the self-check reports offenders, share only the printed field paths, such as `$.entries[0].response.headers[3]`. Keep the HAR and private values local. Legitimate names can still resemble secrets to the check.
+
+Open the output locally in a text editor before sharing. Look at every origin, path, name, MIME token, and filename extension. Check for session and device identifiers, names, email addresses, account numbers or suffixes, balances, transactions, and other private data. Short strings, tokens that look like ordinary names, and information encoded in counts or request ordering can escape the checks. A successful run leaves the source HAR sensitive.
 
 After reviewing the skeleton, delete the HAR and any extra copies from export folders and the Recycle Bin or Trash. Also delete the QFX downloaded during recording if it is no longer needed. Use private, encrypted local storage from the start. Deleting a file may leave recoverable copies on SSDs, snapshots, synced folders, or backups. Remove those copies where possible.
 

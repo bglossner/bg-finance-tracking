@@ -1,7 +1,9 @@
 """Synthetic, offline coverage of the HAR skeleton command."""
 
 import base64
+from contextlib import redirect_stderr, redirect_stdout
 import copy
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from urllib.parse import quote
 
 
@@ -91,6 +94,46 @@ def synthetic_har():
                     'entries': [accounts, download, asset]}}
 
 
+def synthetic_banking_har():
+    capture = synthetic_har()
+    accounts, download, _ = capture['log']['entries']
+    accounts['request']['url'] = (
+        'https://secure.chase.com/api/recentitems/accountview/transactionHistory'
+        '?includeAccountDetails=true'
+    )
+    accounts['request']['headers'].extend([
+        header('Sec-CH-UA-Platform', '"Imaginary OS"'),
+        header('X-JPMC-CSRF-Token', 'pretendCrossSiteCredential'),
+        header('X-Client-Request-Context', 'synthetic browser context'),
+    ])
+    accounts['response']['headers'].extend([
+        header('Access-Control-Allow-Origin', 'https://secure.chase.com'),
+        header('X-JPMC-Response-Context', 'synthetic response context'),
+        header('X-Content-Type-Options', 'nosniff'),
+        header('Cross-Origin-Resource-Policy', 'same-site'),
+    ])
+    accounts['response']['content']['text'] = json.dumps({
+        'customerAccountSummary': {
+            'availableAccountDetails': [
+                {'accountIdentifier': f'{9000 + index:04d}',
+                 'accountDisplayDescription': 'Fake account label',
+                 'currentAvailableBalance': 123.45,
+                 'preferencesAndSettings': {'electronicDeliveryEnabled': True}}
+                for index in range(24)
+            ],
+        },
+    })
+    accounts['response']['content']['size'] = 65536
+    download['request']['postData']['text'] += '&statementDownloadFormat=webconnect'
+    analytics = entry('https://browser-telemetry.example.test/metrics/recentitems/session',
+                      mime='application/javascript', text='let syntheticSession = "fake";')
+    capture['log']['entries'] = [accounts, download, analytics]
+    for _ in range(23):
+        capture['log']['entries'].extend(copy.deepcopy([accounts, download, analytics]))
+    capture['log']['entries'][-1]['startedDateTime'] = '2026-10-01T13:12:34Z'
+    return capture
+
+
 class HarSkeletonTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -153,6 +196,40 @@ class HarSkeletonTests(unittest.TestCase):
         self.assertEqual(asset['response']['body'], '<omitted>')
         self.assertIn({'path': download['path'], 'count': 1}, outline['path_counts'])
 
+    def test_banking_capture_retains_structure(self):
+        self.har = synthetic_banking_har()
+        outline = self.successful(self.run_tool())
+        accounts, download, analytics = outline['entries'][:3]
+        self.assertEqual(len(outline['entries']), 72)
+        self.assertEqual(outline['entries'][-1]['relative_seconds'], 4354)
+        self.assertEqual(accounts['origin'], 'https://secure.chase.com')
+        self.assertEqual(analytics['origin'], '<third-party>')
+        path = '/api/recentitems/accountview/<token>'
+        self.assertEqual(accounts['path'], path)
+        self.assertIn({'path': path, 'count': 24}, outline['path_counts'])
+        self.assertIn('x-jpmc-response-context', accounts['response']['headers'])
+        self.assertIn('x-jpmc-csrf-token', accounts['request']['headers'])
+        self.assertIn('sec-ch-ua-platform', accounts['request']['headers'])
+        self.assertEqual(accounts['request']['cookie_count'], 2)
+        self.assertEqual(download['response']['set_cookie_count'], 2)
+        self.assertEqual(accounts['query'], [header_type('includeAccountDetails', '<bool>')])
+        self.assertIn(header_type('statementDownloadFormat', '<str:le-32>'), download['request']['body'])
+        summary, = accounts['response']['body']['fields']
+        self.assertEqual(summary['name'], 'customerAccountSummary')
+        available, = summary['type']['fields']
+        self.assertEqual(available['name'], 'availableAccountDetails')
+        self.assertEqual(available['type']['count_bucket'], 'le-100')
+        fields = available['type']['first']['fields']
+        self.assertIn(header_type('accountIdentifier', '<int>'), fields)
+        self.assertIn(header_type('accountDisplayDescription', '<str:le-32>'), fields)
+        self.assertIn(header_type('preferencesAndSettings', {
+            'fields': [header_type('electronicDeliveryEnabled', '<bool>')],
+        }), fields)
+        self.assertEqual(accounts['response']['size_bucket'], 'le-65536')
+        self.assertEqual(download['response']['disposition'], 'attachment; filename=<name>.qfx')
+        self.assertIn('BANKACCTFROM', download['response']['body'])
+        self.assertIn('STMTTRN', download['response']['body'])
+
     def test_third_party_and_explicit_hostname_pattern(self):
         self.har['log']['entries'] += [entry('https://secure.chase.com.example.test/help'),
                                        entry('https://api.jpmorganchase.com/help')]
@@ -201,9 +278,97 @@ class HarSkeletonTests(unittest.TestCase):
 
     def test_self_check_catches_path_if_templating_regresses(self):
         module = runpy.run_path(str(SCRIPT))
-        sources = module['InputStrings']({})
+        sources = module['InputValues']({})
         outline = {'entries': [{'path': f'/activity/{ACCOUNT}/download'}]}
         self.assertEqual(module['self_check'](outline, sources), ['$.entries[0].path'])
+
+    def assert_refused(self, result, paths, *values):
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, '')
+        self.assertEqual(result.stderr.splitlines(), paths)
+        self.assertFalse(self.destination.exists())
+        for value in values:
+            self.assertNotIn(value, result.stderr)
+
+    def test_value_echoed_into_a_json_key_is_refused(self):
+        secret = 'privateMarker'
+        for source in ('header', 'query', 'form', 'json', 'body', 'postData'):
+            with self.subTest(source=source):
+                accounts = entry('https://secure.chase.com/api/accounts',
+                                 text=json.dumps({f'{secret}Copy': True}))
+                source_entry = entry('https://secure.chase.com/lookup')
+                request = source_entry['request']
+                content = source_entry['response']['content']
+                if source == 'header':
+                    request['headers'] = [header('X-Device', secret)]
+                elif source == 'query':
+                    request['url'] += '?lookupHint=private%4Darker'
+                elif source == 'form':
+                    request['postData'] = {'mimeType': 'application/x-www-form-urlencoded',
+                                           'text': 'lookupHint=private%4Darker'}
+                elif source == 'json':
+                    content['text'] = json.dumps({'privateHint': [secret]})
+                elif source == 'body':
+                    content.update(mimeType='text/plain', text=f'hello {secret} world')
+                else:
+                    request['postData'] = {'mimeType': 'text/plain', 'text': f'hello {secret} world'}
+                self.har['log']['entries'] = [accounts, source_entry]
+                result = self.run_tool('-o', self.destination)
+                self.assert_refused(result, ['$.entries[0].response.body.fields[0].name'], secret)
+
+    def test_account_number_in_json_key_is_refused(self):
+        number = '0742'
+        accounts = self.har['log']['entries'][0]
+        accounts['response']['content']['text'] = json.dumps({f'account{number}': True})
+        result = self.run_tool('-o', self.destination)
+        self.assert_refused(result, ['$.entries[0].response.body.fields[0].name'], number)
+
+    def test_email_in_header_name_is_refused(self):
+        first = entry('https://secure.chase.com/api', request_headers=[header(EMAIL, 'fake')])
+        self.har['log']['entries'] = [first]
+        result = self.run_tool('-o', self.destination)
+        self.assert_refused(result, ['$.entries[0].request.headers[0]'], EMAIL)
+
+    def test_first_party_origin_with_a_copied_secret_label_is_refused(self):
+        secret = 'privateprofile'
+        first = entry(f'https://{secret}.chase.com/api', request_headers=[header('X-Device', secret)])
+        self.har['log']['entries'] = [first]
+        result = self.run_tool('-o', self.destination)
+        self.assert_refused(result, ['$.entries[0].origin'], secret)
+
+    def test_templated_path_token_is_refused_if_it_slips_through(self):
+        token = 'retained/marker'
+        self.har['log']['entries'] = [
+            entry('https://secure.chase.com/activity/' + quote(token, safe='')),
+        ]
+        self.source.write_text(json.dumps(self.har), encoding='utf-8')
+        module = runpy.run_path(str(SCRIPT))
+        make_skeleton = module['make_skeleton']
+
+        def faulty_skeleton(*args):
+            outline = make_skeleton(*args)
+            self.assertEqual(outline['entries'][0]['path'], '/activity/<token>')
+            outline['entries'][0]['path'] = f'/activity/{token}'
+            return outline
+
+        with (patch.dict(make_skeleton.__globals__, make_skeleton=faulty_skeleton),
+              patch.object(sys, 'argv', [str(SCRIPT), str(self.source), '-o', str(self.destination)]),
+              redirect_stdout(StringIO()) as stdout, redirect_stderr(StringIO()) as stderr):
+            code = module['main']()
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertEqual(stderr.getvalue(), '$.entries[0].path\n')
+        self.assertNotIn(token, stderr.getvalue())
+        self.assertFalse(self.destination.exists())
+
+    def test_amount_in_ofx_tag_is_refused(self):
+        amount = '22.50'
+        self.har['log']['entries'] = [
+            entry('https://secure.chase.com/download', mime='application/qfx',
+                  text=f'<OFX><TRN{amount}>fake</TRN{amount}></OFX>'),
+        ]
+        result = self.run_tool('-o', self.destination)
+        self.assert_refused(result, ['$.entries[0].response.body[1]'], amount)
 
     def test_self_check_refuses_base64_spanning_path_slashes(self):
         candidate = 'VmFsdWVz/QXJlRmFr'

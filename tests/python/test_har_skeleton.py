@@ -354,6 +354,10 @@ class HarSkeletonTests(unittest.TestCase):
         self.assertEqual(report['status'], 'complete')
         self.assertNotIn(r'\q', stdout)
         self.assertNotIn('synthetic.qfx', stdout)
+        stdout, report = self.diagnose(python_flags=('-Werror',))
+        self.assertEqual(report['status'], 'processing-failed')
+        self.assertIsNone(report['offender_count'])
+        self.assertNotIn(r'\q', stdout)
 
     def test_diagnose_processing_failure_and_output_flags_are_safe(self):
         stdout, bad_json = self.diagnose(raw=f'{{"malformed":"{JWT}"')

@@ -1113,10 +1113,8 @@ def main():
     diagnostics = Diagnostics() if args.diagnose else None
     entry_count = None
     try:
-        with warnings.catch_warnings() if args.diagnose else nullcontext():
-            if args.diagnose:
-                # Some parsers include input fragments in decoding warnings.
-                warnings.simplefilter('ignore')
+        # Keep parser warning text local while preserving warnings-as-errors behavior.
+        with warnings.catch_warnings(record=True) if args.diagnose else nullcontext():
             document = parse_json(args.input.read_text(encoding='utf-8-sig'))
             if args.diagnose:
                 log = require(require(document, dict)['log'], dict)

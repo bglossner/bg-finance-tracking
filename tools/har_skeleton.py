@@ -88,10 +88,14 @@ WEB_LITERAL = re.compile(r'''(?P<comment>/\*.*?\*/|//[^\r\n]*)|'''
                          r'''(?P<quoted>"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)''', re.S)
 WEB_PROPERTY_END = re.compile(r'\s*:')
 WEB_MIME_START = re.compile(r'''["'](?:content-type|accept)["']\s*:\s*\Z''', re.I)
-WEB_ROUTE_START = re.compile(r'\b(?:fetch|Request|url)\s*\(\s*\Z', re.I)
+JS_ROUTE_START = re.compile(r'(?<![\w$.])(?:(?:(?:window|globalThis)\.)?fetch|new\s+Request)\s*\(\s*\Z')
+CSS_ROUTE_START = re.compile(r'\burl\s*\(\s*\Z', re.I)
 HTML_MIME_TAGS = frozenset('a embed link object script source style'.split())
-HTML_ROUTE_ATTRIBUTES = {'href': frozenset('a area base link'.split()),
-                         'src': frozenset('audio embed iframe img input script source track video'.split())}
+HTML_ROUTE_ATTRIBUTES = {'href': frozenset('a area base image link use'.split()),
+                         'src': frozenset('audio embed iframe img input script source track video'.split()),
+                         'xlink:href': frozenset('a image use'.split())}
+REQUEST_ORIGIN_HEADERS = frozenset({'origin', 'referer'})
+RESPONSE_ORIGIN_HEADERS = frozenset({'access-control-allow-origin', 'location', 'timing-allow-origin'})
 
 
 class InvalidInput(ValueError):
@@ -358,14 +362,16 @@ def mime_header(value, header, sources):
         raise InvalidInput
     message = Message(policy=policy.compat32)
     message[header] = value
-    for _, parameter in message.get_params(header=header, failobj=[])[1:]:
-        sources.remember(collapse_rfc2231_value(parameter, errors='strict'))
+    for name, parameter in message.get_params(header=header, failobj=[])[1:]:
+        # The email parser represents a bare parameter fragment as a name with an empty value.
+        sources.remember(collapse_rfc2231_value(parameter, errors='strict') or name)
     return message
 
 
 def header_shape(side, sources, *, response=False, authority='', target=''):
     names = set()
     values = defaultdict(list)
+    origin_headers = RESPONSE_ORIGIN_HEADERS if response else REQUEST_ORIGIN_HEADERS
     for header in require(side.get('headers', []), list):
         header = require(header, dict)
         original = require(header['name'], str)
@@ -385,7 +391,7 @@ def header_shape(side, sources, *, response=False, authority='', target=''):
             credentials = value.split(maxsplit=1)
             if len(credentials) == 2:
                 sources.remember_secret(credentials[1].strip())
-        if name in ('origin', 'referer', 'access-control-allow-origin') and bank_origin(value):
+        if name in origin_headers and bank_origin(value):
             sources.structural_occurrence(value)
         elif not response and authority and (
                 (name in ('host', ':authority') and value.lower() == authority.split('://')[1])
@@ -487,17 +493,19 @@ def parsed_json_shape(text, sources):
     return json_shape(data)
 
 
-def web_structure(text, match, literal, sources):
+def web_structure(text, match, literal, sources, web_mime):
     start, end = match.span()
     # Recognize local syntax without rescanning the prefix of a large web asset.
     before = text[max(0, start - 64):start]
+    if web_mime == 'text/css':
+        return PATH.fullmatch(literal) is not None and CSS_ROUTE_START.search(before) is not None
     if mime_type(literal) and WEB_MIME_START.search(before):
         if ';' in literal:
             mime_header(literal, 'Content-Type', sources)
         return True
     if before.rstrip().endswith(('{', ',')) and WEB_PROPERTY_END.match(text, end):
         return True
-    return PATH.fullmatch(literal) is not None and WEB_ROUTE_START.search(before) is not None
+    return PATH.fullmatch(literal) is not None and JS_ROUTE_START.search(before) is not None
 
 
 def remember_tokens(text, sources):
@@ -505,10 +513,10 @@ def remember_tokens(text, sources):
         sources.remember(match[0])
 
 
-def remember_text(text, sources, *, web_asset=False):
+def remember_text(text, sources, *, web_mime=None):
     sources.remember(text)
     sources.remember(text.splitlines())
-    if not web_asset:
+    if web_mime is None:
         remember_tokens(text, sources)
         return
     end = 0
@@ -517,7 +525,7 @@ def remember_text(text, sources, *, web_asset=False):
         quoted = match['quoted']
         if quoted:
             literal = quoted[1:-1]
-            if not web_structure(text, match, literal, sources):
+            if not web_structure(text, match, literal, sources, web_mime):
                 sources.remember(literal)
                 remember_tokens(literal, sources)
         else:
@@ -526,7 +534,7 @@ def remember_text(text, sources, *, web_asset=False):
     remember_tokens(text[end:], sources)
 
 
-def remember_opaque_text(text, sources, *, web_asset=False):
+def remember_opaque_text(text, sources, *, web_mime=None):
     if text.lstrip().startswith(('{', '[')):
         try:
             data = parse_json(text)
@@ -535,18 +543,20 @@ def remember_opaque_text(text, sources, *, web_asset=False):
         else:
             sources.remember(data)
             return
-    remember_text(text, sources, web_asset=web_asset)
+    remember_text(text, sources, web_mime=web_mime)
 
 
 class HtmlValues(HTMLParser):
     def __init__(self, sources):
         super().__init__()
         self.sources = sources
-        self.script_mime = None
+        self.code_mime = None
 
     def handle_starttag(self, tag, attrs):
         if tag == 'script':
-            self.script_mime = mime_type(dict(attrs).get('type') or '')
+            self.code_mime = mime_type(dict(attrs).get('type') or '')
+        elif tag == 'style':
+            self.code_mime = 'text/css'
         for name, value in attrs:
             if not value:
                 continue
@@ -557,18 +567,36 @@ class HtmlValues(HTMLParser):
                 remember_text(value, self.sources)
 
     def handle_endtag(self, tag):
-        if tag == 'script':
-            self.script_mime = None
+        if tag in ('script', 'style'):
+            self.code_mime = None
 
     def handle_data(self, data):
-        if self.script_mime is not None and is_json_mime(self.script_mime):
+        if self.code_mime is not None:
+            wrapped = data.strip()
+            if wrapped.startswith('<![CDATA[') and wrapped.endswith(']]>'):
+                data = wrapped[9:-3]
+        if self.code_mime is not None and is_json_mime(self.code_mime):
             if data.strip():
                 self.sources.remember(parse_json(data))
         else:
-            remember_text(data, self.sources, web_asset=self.script_mime is not None)
+            remember_text(data, self.sources, web_mime=self.code_mime)
 
     def handle_comment(self, data):
         remember_text(data, self.sources)
+
+    def handle_decl(self, decl):
+        remember_text(decl, self.sources)
+
+    def handle_pi(self, data):
+        remember_text(data.removesuffix('?'), self.sources)
+
+    def unknown_decl(self, data):
+        remember_text(data.removeprefix('CDATA['), self.sources)
+
+    def close(self):
+        super().close()
+        if self.code_mime is not None:
+            raise InvalidInput
 
 
 def xml_tags(text, sources):
@@ -633,6 +661,9 @@ def disposition_shape(value, sources):
 
 def response_shape(response, sources):
     result, headers = header_shape(response, sources, response=True)
+    redirect = response.get('redirectURL')
+    if isinstance(redirect, str) and bank_origin(redirect):
+        sources.structural_occurrence(redirect)
     content = require(response.get('content', {}), dict)
     declared_mime = require(content.get('mimeType', ''), str)
     mime = mime_type(declared_mime) or mime_type(first_header(headers, 'content-type'))
@@ -684,7 +715,7 @@ def response_shape(response, sources):
             parser.feed(text)
             parser.close()
         else:
-            remember_opaque_text(text, sources, web_asset=mime in WEB_MIMES)
+            remember_opaque_text(text, sources, web_mime=mime if mime in WEB_MIMES else None)
     result.update(status=status, mime=mime or '<omitted>', size_bucket=bucket(size, SIZE_BOUNDS),
                   disposition=disposition, body=body)
     return result

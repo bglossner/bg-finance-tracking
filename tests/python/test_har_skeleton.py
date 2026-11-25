@@ -368,6 +368,14 @@ class HarSkeletonTests(unittest.TestCase):
                 self.har['log']['entries'] = [first]
                 self.assert_refused(self.run_tool('-o', self.destination), ['$.entries[0].origin'], host)
 
+    def test_timing_origin_and_redirect_headers_can_mirror_the_bank_origin(self):
+        origin = 'https://secure.chase.com'
+        first = entry(f'{origin}/api', response_headers=[header('Timing-Allow-Origin', origin),
+                                                        header('Location', origin)])
+        first['response'].update(status=302, redirectURL=origin)
+        self.har['log']['entries'] = [first]
+        self.assertEqual(self.successful(self.run_tool())['entries'][0]['origin'], origin)
+
     def test_base64url_tokens_are_refused_in_structural_names(self):
         token = 'I-sdtByincRGCWbyTRROkg'
         first = entry('https://secure.chase.com/api', text=json.dumps({token: True}),
@@ -386,11 +394,15 @@ class HarSkeletonTests(unittest.TestCase):
                        text='fetch("/api/accounts", {headers: {"Content-Type": "application/json; charset=UTF-8"}});')
         page = entry('https://secure.chase.com/home', mime='text/html',
                      text='<a href=/api/accounts>Open</a>'
-                          '<script type=application/json>{"addressLine1Verification":true}</script>')
+                          '<script type=application/json>{"addressLine1Verification":true}</script>'
+                          '<svg><image href="/api/accounts" /></svg>'
+                          '<style>div { background-image: url("/api/accounts"); }</style>')
         css = entry('https://assets.example.test/app/theme', mime='text/css',
                     text='div { background-image: url("/api/accounts"); }')
         graphql = entry('https://secure.chase.com/api/graphql', mime='application/graphql-response+json')
-        self.har['log']['entries'] = [first, script, page, css, graphql]
+        xhtml = entry('https://secure.chase.com/home/profile', mime='application/xhtml+xml',
+                      text='<script type="application/ld+json"><![CDATA[{"@type":"WebSite"}]]></script>')
+        self.har['log']['entries'] = [first, script, page, css, graphql, xhtml]
         outline = self.successful(self.run_tool())
         self.assertEqual(outline['entries'][0]['path'], '/api/accounts')
         self.assertEqual(outline['entries'][0]['request']['accept'], 'application/merge-patch+json')
@@ -398,17 +410,35 @@ class HarSkeletonTests(unittest.TestCase):
         self.assertEqual(outline['entries'][0]['response']['body']['fields'],
                          [header_type(name, '<bool>') for name in names])
         self.assertEqual([item['response']['body'] for item in outline['entries'][1:]],
-                         ['<omitted>'] * 4)
+                         ['<omitted>'] * 5)
 
     def test_web_source_code_inside_a_string_is_data(self):
         first = entry('https://secure.chase.com/private/marker', mime='application/privatemarker')
-        script = entry('https://assets.example.test/script', mime='application/javascript',
-                       text='''const first = 'type="application/privatemarker"';'''
-                            '''const second = 'fetch("/private/marker")';''')
-        self.har['log']['entries'] = [first, script]
+        for javascript in ('''const first = 'type="application/privatemarker"';'''
+                           '''const second = 'fetch("/private/marker")';''',
+                           'logger.url("/private/marker");'
+                           'const options = {"Content-Type": "application/json; application/privatemarker"};'):
+            script = entry('https://assets.example.test/script', mime='application/javascript', text=javascript)
+            self.har['log']['entries'] = [first, script]
+            self.assert_refused(self.run_tool('-o', self.destination),
+                                ['$.entries[0].path', '$.entries[0].response.mime', '$.path_counts[0].path'],
+                                '/private/marker', 'application/privatemarker')
+
+    def test_html_markup_values_remain_private(self):
+        secret = 'privateMarker'
+        first = entry('https://secure.chase.com/api', text=json.dumps({f'{secret}Copy': True}))
+        for fragment in (f'<![CDATA[{secret}]]>', f'<?echo {secret}?>',
+                         f'<!DOCTYPE html SYSTEM "{secret}">'):
+            with self.subTest(fragment=fragment):
+                page = entry('https://secure.chase.com/home', mime='application/xhtml+xml', text=fragment)
+                self.har['log']['entries'] = [first, page]
+                self.assert_refused(self.run_tool('-o', self.destination),
+                                    ['$.entries[0].response.body.fields[0].name'], secret)
+        self.har['log']['entries'] = [
+            first, entry('https://secure.chase.com/home', mime='text/html', text=f'<script>{secret}'),
+        ]
         self.assert_refused(self.run_tool('-o', self.destination),
-                            ['$.entries[0].path', '$.entries[0].response.mime', '$.path_counts[0].path'],
-                            '/private/marker', 'application/privatemarker')
+                            ['Could not read or process the HAR.'], secret)
 
     def test_bare_query_and_form_parameter_names_are_retained(self):
         self.har['log']['entries'] = [

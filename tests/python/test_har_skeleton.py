@@ -376,7 +376,7 @@ class HarSkeletonTests(unittest.TestCase):
 
     def test_http2_token_checks_survive_structure_exemptions(self):
         token = 'v8ss5qb9km2zde6p'
-        for name in (token, token.upper(), 'qBkaf_LuWslqWKszTmna'):
+        for name in (token, token.upper(), 'qBkaf_LuWslqWKszTmna', 'qbkafluwslqwksztmn_a'):
             with self.subTest(name=name):
                 first = entry('https://asset.chase.com/api',
                               request_headers=[header(f'X-{name}', 'fake')],
@@ -388,6 +388,35 @@ class HarSkeletonTests(unittest.TestCase):
         self.har['log']['entries'] = [entry(f'https://{token}.chase.com/api', mime=f'text/{token}')]
         self.assert_refused(self.run_tool('-o', self.destination),
                             ['$.entries[0].origin', '$.entries[0].response.mime'], token)
+
+    def test_cors_preflight_requires_matching_later_request(self):
+        target = 'https://asset.chase.com/api'
+        origin = 'https://www.chase.com'
+        name = 'content-type'
+        preflight = entry(target, method='OPTIONS', request_headers=[
+            header('Origin', origin), header('Access-Control-Request-Method', 'POST'),
+            header('Access-Control-Request-Headers', name),
+        ], response_headers=[header('Access-Control-Allow-Headers', name)])
+        preflight['response'].update(status=204, headers=preflight['response']['headers'][1:])
+        preflight['response']['content']['mimeType'] = ''
+        actual = entry(target, method='POST', request_headers=[
+            header('Origin', origin), header(name, 'application/json'),
+        ])
+        self.har['log']['entries'] = [preflight, actual]
+        self.successful(self.run_tool())
+
+        original = actual['request']
+        for field, wrong in (('url', target + '/other'), ('method', 'GET'), ('origin', target.rsplit('/', 1)[0])):
+            with self.subTest(mismatch=field):
+                request = copy.deepcopy(original)
+                if field == 'origin':
+                    request['headers'][0]['value'] = wrong
+                else:
+                    request[field] = wrong
+                actual['request'] = request
+                self.assert_refused(self.run_tool('-o', self.destination),
+                                    ['$.entries[1].request.headers[0]', '$.entries[1].response.headers[0]'],
+                                    name)
 
     def test_chrome_http2_windows_bytes_match_utf8_lf(self):
         text = json.dumps(chrome_http2_har(), indent=2)

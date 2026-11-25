@@ -894,15 +894,39 @@ def exclude_browser_metadata(entry, sources):
             sources.structural_occurrence(value)
 
 
-def exclude_cors_header_mirrors(entry, outline, sources):
-    for side, list_header, mirrored_side in CORS_HEADER_LISTS:
-        retained_names = set(outline[mirrored_side]['headers'])
-        for header in entry[side].get('headers', []):
-            if header['name'].lower() == list_header:
-                value = header['value']
-                names = [name.strip().lower() for name in value.split(',')]
-                if all(name in retained_names and HTTP_TOKEN.fullmatch(name) for name in names):
-                    sources.structural_occurrence(value, 'header-value')
+def cors_names(value):
+    names = {name.strip(' \t').lower() for name in value.split(',')}
+    return names if all(HTTP_TOKEN.fullmatch(name) for name in names) else set()
+
+
+def exclude_cors_header_mirrors(entries, outlines, sources):
+    later_requests = defaultdict(set)
+    for entry, outline in zip(reversed(entries), reversed(outlines)):
+        request_headers = defaultdict(list)
+        for header in entry['request'].get('headers', []):
+            request_headers[header['name'].lower()].append(header['value'])
+        request_names = frozenset(outline['request']['headers'])
+        origins = request_headers['origin']
+        method = outline['method']
+        if len(origins) == 1 and structured_origin(origins[0]):
+            target = (entry['request']['url'], origins[0])
+            preflight_methods = request_headers['access-control-request-method']
+            preflight_headers = request_headers['access-control-request-headers']
+            if method == 'OPTIONS' and len(preflight_methods) == len(preflight_headers) == 1:
+                declared_names = cors_names(preflight_headers[0])
+                candidates = later_requests.get((*target, preflight_methods[0]), ())
+                if declared_names and any(declared_names <= names for names in candidates):
+                    request_names |= declared_names
+            elif method in METHODS and method != 'OPTIONS':
+                later_requests[(*target, method)].add(request_names)
+        retained = {'request': request_names, 'response': set(outline['response']['headers'])}
+        for side, list_header, mirrored_side in CORS_HEADER_LISTS:
+            for header in entry[side].get('headers', []):
+                if header['name'].lower() == list_header:
+                    value = header['value']
+                    names = cors_names(value)
+                    if names and names <= retained[mirrored_side]:
+                        sources.structural_occurrence(value, 'header-value')
 
 
 def make_skeleton(document, include_host, sources):
@@ -940,9 +964,9 @@ def make_skeleton(document, include_host, sources):
                    'method': method if method in METHODS else '<method>',
                    'origin': origin, 'path': path, 'query': pair_shape(pairs or declared),
                    'request': request_info, 'response': response}
-        exclude_cors_header_mirrors(entry, outline, sources)
         output.append(outline)
         counts[path] += 1
+    exclude_cors_header_mirrors(entries, output, sources)
     return {'entries': output, 'path_counts': [{'path': path, 'count': count}
                                                for path, count in sorted(counts.items())]}
 
@@ -1227,8 +1251,8 @@ def blob_like(value, field):
             if structural and all(name_word(part) for part in re.split(r'[-_]', candidate)):
                 continue
             mixed_case = re.search(r'[a-z]', candidate) and re.search(r'[A-Z]', candidate)
-            if mixed_case and (re.search(r'[0-9]', candidate)
-                               or (field == 'path' and '/' in candidate) or canonical_blob(candidate)):
+            if (canonical_blob(candidate) or (mixed_case and
+                    (re.search(r'[0-9]', candidate) or (field == 'path' and '/' in candidate)))):
                 return True
     return False
 

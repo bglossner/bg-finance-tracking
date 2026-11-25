@@ -34,7 +34,7 @@ python3 -I -B -m unittest discover -s tests/python -v
 
 ## What the skeleton contains
 
-- Zero-based entry indexes, whole seconds relative to the first entry, bucketed total durations, standard HTTP methods, origins, and path-template counts. Origins keep the scheme and hostname for `chase.com`, `jpmorgan.com`, `jpmorganchase.com`, `jpmchase.com`, and their subdomains. Other hosts collapse to `<third-party>` by default. Paths keep short ASCII letter-only segments. Identifiers and other segments become placeholders.
+- Zero-based entry indexes, whole seconds relative to the first entry, bucketed total durations, standard HTTP methods, origins, and path-template counts. Origins keep the scheme and hostname for `chase.com`, `jpmorgan.com`, `jpmorganchase.com`, `jpmchase.com`, and their subdomains. Other hosts collapse to `<third-party>` by default. Paths keep short ASCII letter-only segments and one- or two-digit versions such as `v1`. Identifiers and other segments become placeholders.
 - Sorted query names with value-type hints, request and response header names, and counts in place of `Cookie` and `Set-Cookie`. The URL query takes precedence over the HAR's duplicate query list. Safe MIME tokens can appear for the request and response. MIME parameters are removed. `Accept` is kept only when it is a single valid token or `*/*`.
 - Request JSON and form field shapes, multipart field names, and a MIME and size hint for other request bodies. Responses retain status, MIME and size bucket, and a short filename extension if available. JSON arrays show the first element's shape and a count bucket. QFX, OFX, and XML bodies expose ordered unique opening tag names. Other response bodies are omitted.
 
@@ -44,7 +44,7 @@ The output drops literal query and body values, cookie names and values, authent
 
 Before writing, the tool checks retained strings, including header names, parameter names, JSON keys and OFX tags, for copies of collected input values. It collects header values, cookie names and values, query and form values, complete query strings, JSON scalar values, body text tokens, and URL path segments replaced by placeholders. It checks copies of eight or more characters, digit runs of four or more digits, and shorter credential parts in retained names and other structural fields.
 
-The check also looks for email addresses, dates, amounts, JWTs and token-like base64. It recognizes generated hints and buckets, conventional structural names, and common protocol declarations in web assets. It treats a first-party origin in protocol headers such as `Access-Control-Allow-Origin` as structural metadata. The same text in a credential or query value still triggers a refusal if copied. A refusal writes no skeleton and reports only field positions.
+The check also looks for email addresses, dates, amounts, JWTs and token-like base64. It recognizes generated hints and buckets, conventional names, and protocol declarations. It exempts each recognized occurrence separately. Examples include media declarations, CORS lists made of retained header names, and exact bank origins in Chrome initiator URL fields. HTTP/2 `:path` and `Referer` still contribute query values and sensitive path segments. A copy from an independent data field still triggers refusal. A refusal writes no skeleton and reports only field positions.
 
 ## Diagnose a refusal
 

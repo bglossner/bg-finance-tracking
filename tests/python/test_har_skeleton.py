@@ -14,7 +14,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 
 SCRIPT = Path(__file__).resolve().parents[2] / 'tools' / 'har_skeleton.py'
@@ -134,6 +134,52 @@ def synthetic_banking_har():
     return capture
 
 
+def chrome_http2_har():
+    capture = synthetic_banking_har()
+    accounts, download, analytics = capture['log']['entries'][:3]
+    accounts['request']['url'] = ('https://asset.chase.com/svc/rr/accounts/secure/v1/activity/'
+                                  f'{ACCOUNT}?includeAccountDetails=true')
+    accounts['response']['headers'].extend([
+        header('Access-Control-Allow-Headers', 'content-type'),
+        header('X-Client-ResponseTimingPolicy', 'fake policy context'),
+    ])
+    beacon = entry('https://asset.chase.com/api/recent%69tems/stylesheet', method='POST',
+                   mime='text/plain', text='synthetic acknowledgement',
+                   response_headers=[header('Accept', 'text/plain')],
+                   post={'mimeType': 'text/plain;charset=UTF-8', 'text': 'synthetic event payload'})
+    beacon['request']['headers'].append(header('content-type', 'text/plain;charset=UTF-8'))
+    page = entry('https://www.chase.com/', mime='text/html; charset=utf-8',
+                 text='<html><main>Demo</main></html>')
+    script = entry('https://static.chase.com/assets/scripts', mime='application/javascript',
+                   text='const example = "synthetic literal";')
+    templates = [accounts, download, analytics, beacon, page, script]
+    for item, resource_type in zip(templates, ('xhr', 'fetch', 'script', 'ping', 'document', 'stylesheet')):
+        request = item['request']
+        url = urlsplit(request['url'])
+        target = (url.path or '/') + ('?' + url.query if url.query else '')
+        if item is beacon:
+            target = '/api/recentitems/stylesheet'
+        # Browser exports can keep both the serialized target and HAR's decoded structure.
+        request['headers'] = [
+            header(':authority', url.netloc), header(':method', request['method']),
+            header(':path', target), header(':scheme', url.scheme),
+            header('origin', 'https://www.chase.com'),
+            header('referer', 'https://www.chase.com/portal?mode=sample'),
+            header('sec-fetch-dest', 'empty'), header('sec-fetch-mode', 'cors'),
+            header('sec-fetch-site', 'same-site'),
+            *(item for item in request['headers'] if item['name'] not in
+              (':authority', 'Origin')),
+        ]
+        item.update(_resourceType=resource_type, _priority='VeryHigh',
+                    _initiator={'type': 'script', 'stack': {'callFrames': [
+                        {'functionName': 'syntheticHandler', 'scriptId': '4',
+                         'url': 'https://asset.chase.com', 'lineNumber': 4, 'columnNumber': 8},
+                    ]}})
+        item['response']['httpVersion'] = 'h2'
+    capture['log']['entries'] = [copy.deepcopy(item) for _ in range(20) for item in templates]
+    return capture
+
+
 class HarSkeletonTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -143,7 +189,10 @@ class HarSkeletonTests(unittest.TestCase):
         self.har = synthetic_har()
 
     def run_tool(self, *args, raw=None, python_flags=()):
-        self.source.write_text(json.dumps(self.har) if raw is None else raw, encoding='utf-8')
+        if isinstance(raw, bytes):
+            self.source.write_bytes(raw)
+        else:
+            self.source.write_text(json.dumps(self.har) if raw is None else raw, encoding='utf-8')
         return subprocess.run([sys.executable, '-I', *python_flags, str(SCRIPT), str(self.source), *map(str, args)],
                               capture_output=True, text=True, timeout=10, check=False)
 
@@ -235,6 +284,85 @@ class HarSkeletonTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stderr, '')
         return result.stdout, json.loads(result.stdout)
+
+    def test_public_http2_slots_pass_direct_self_check(self):
+        module = runpy.run_path(str(SCRIPT))
+        origins = ('https://asset.chase.com', 'https://regionalassetdelivery.chase.com')
+        mimes = ('text/plain', 'application/json', 'text/html; charset=utf-8',
+                 'application/vnd.chase.retailaccountconfiguration+json')
+        path = '/svc/rr/accounts/secure/v1/activity/<id>'
+        for mime in mimes:
+            self.assertEqual(list(module['suspect'](mime, 'mime')), [])
+        for field, values in (('origin', origins), ('mime', tuple(map(module['mime_type'], mimes))), ('path', (path,))):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    self.assertEqual(list(module['suspect'](value, field)), [])
+                    sources = module['InputValues']({})
+                    self.assertEqual(module['self_check']({'entries': [{field: value}]}, sources), [])
+
+    def test_chrome_http2_capture_preserves_public_structure(self):
+        self.har = chrome_http2_har()
+        outline = self.successful(self.run_tool())
+        accounts, download, analytics, beacon, page, script = outline['entries'][:6]
+        self.assertEqual(len(outline['entries']), 120)
+        self.assertEqual([item['origin'] for item in (accounts, download, analytics, beacon, page, script)],
+                         ['https://asset.chase.com', 'https://secure.chase.com', '<third-party>',
+                          'https://asset.chase.com', 'https://www.chase.com', 'https://static.chase.com'])
+        self.assertEqual(accounts['path'], '/svc/rr/accounts/secure/v1/activity/<id>')
+        self.assertEqual(beacon['path'], '/api/recentitems/stylesheet')
+        self.assertEqual([item['response']['mime'] for item in (accounts, beacon, page)],
+                         ['application/json', 'text/plain', 'text/html'])
+        self.assertEqual(beacon['request']['content_type'], 'text/plain')
+        self.assertTrue({':authority', ':method', ':path', ':scheme', 'origin',
+                         'referer', 'sec-fetch-site'}.issubset(accounts['request']['headers']))
+        self.assertIn('x-client-responsetimingpolicy', accounts['response']['headers'])
+        self.assertEqual(accounts['query'], [header_type('includeAccountDetails', '<bool>')])
+        self.assertIn('BANKACCTFROM', download['response']['body'])
+
+    def test_http2_path_only_query_value_is_still_sensitive(self):
+        token = 'privateMarker'
+        first = entry('https://asset.chase.com/api/accounts',
+                      request_headers=[header(':path', '/api/accounts?selected=private%4Darker')],
+                      text=json.dumps({f'{token}Copy': True}))
+        self.har['log']['entries'] = [first]
+        result = self.run_tool('-o', self.destination)
+        self.assert_refused(result, ['$.entries[0].response.body.fields[0].name'], token)
+        first['request']['headers'][0]['value'] += '#illegal-fragment'
+        self.assert_refused(self.run_tool('-o', self.destination), ['Could not read or process the HAR.'], token)
+
+    def test_http2_referer_still_contributes_query_and_identifier_values(self):
+        token = 'privateMarker'
+        path_fragment = 'retained/marker'
+        for authority in ('https://www.chase.com', ''):
+            with self.subTest(absolute=bool(authority)):
+                referer = f'{authority}/portal/retained%2Fmarker?selected=private%4Darker'
+                first = entry(f'https://asset.chase.com/api/{path_fragment}',
+                              request_headers=[header('referer', referer)],
+                              text=json.dumps({f'{token}Copy': True}))
+                self.har['log']['entries'] = [first]
+                result = self.run_tool('-o', self.destination)
+                self.assert_refused(result, ['$.entries[0].path', '$.entries[0].response.body.fields[0].name',
+                                             '$.path_counts[0].path'], token, path_fragment)
+
+    def test_http2_protocol_occurrences_do_not_mask_independent_matches(self):
+        origin = 'https://asset.chase.com'
+        mime = 'text/plain'
+        first = entry(f'{origin}/api', mime=mime,
+                      request_headers=[header('X-Private-Value', mime), header('content-type', mime)],
+                      response_headers=[header('Accept', mime), header('Access-Control-Allow-Headers', 'content-type')])
+        first['_initiator'] = {'url': origin, 'stack': {'callFrames': [{'url': origin}]}}
+        first['_custom'] = {'independent': origin}
+        self.har['log']['entries'] = [first]
+        result = self.run_tool('-o', self.destination)
+        self.assert_refused(result, ['$.entries[0].origin', '$.entries[0].request.content_type',
+                                     '$.entries[0].response.mime'], origin, mime)
+
+    def test_chrome_http2_windows_bytes_match_utf8_lf(self):
+        text = json.dumps(chrome_http2_har(), indent=2)
+        _, lf = self.diagnose(raw=text.encode('utf-8'))
+        _, crlf_bom = self.diagnose(raw=b'\xef\xbb\xbf' + text.replace('\n', '\r\n').encode('utf-8'))
+        self.assertEqual(lf, crlf_bom)
+        self.assertEqual(lf['status'], 'complete')
 
     def test_diagnose_clean_banking_capture_only_reports_metadata(self):
         self.har = synthetic_banking_har()

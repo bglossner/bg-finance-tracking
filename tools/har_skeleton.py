@@ -25,14 +25,16 @@ import warnings
 from xml.parsers import expat
 
 
-VERSION = '1.1.0'
+VERSION = '1.2.0'
 BANK_DOMAINS = ('chase.com', 'jpmorgan.com', 'jpmorganchase.com', 'jpmchase.com')
+URL_SCHEMES = frozenset({'http', 'https', 'ws', 'wss'})
 METHODS = frozenset('GET HEAD POST PUT DELETE CONNECT OPTIONS TRACE PATCH PROPFIND '
                     'PROPPATCH MKCOL COPY MOVE LOCK UNLOCK REPORT SEARCH'.split())
 HTTP_TOKEN = re.compile(r"[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}")
 NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_.:\-\[\]]{0,127}')
 HOST = re.compile(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?')
-PATH = re.compile(r'(?:/(?:[A-Za-z]{1,11}|<id>|<token>)?)+')
+ROUTE_SEGMENT = re.compile(r'[A-Za-z]{1,11}|v[0-9]{1,2}')
+PATH = re.compile(rf'(?:/(?:{ROUTE_SEGMENT.pattern}|<id>|<token>)?)+')
 MIME = re.compile(r'(?:application|audio|example|font|image|message|model|multipart|text|video)'
                   r'/[a-z0-9][a-z0-9.+-]{0,63}')
 EXTENSION = re.compile(r'\.[a-z][a-z0-9]{0,5}\Z')
@@ -107,6 +109,16 @@ HTML_ROUTE_ATTRIBUTES = {'href': frozenset('a area base image link use'.split())
                          'xlink:href': frozenset('a image use'.split())}
 REQUEST_ORIGIN_HEADERS = frozenset({'origin', 'referer'})
 RESPONSE_ORIGIN_HEADERS = frozenset({'access-control-allow-origin', 'location', 'timing-allow-origin'})
+CORS_HEADER_LISTS = {
+    'request': frozenset({'access-control-request-headers'}),
+    'response': frozenset({'access-control-allow-headers', 'access-control-expose-headers'}),
+}
+BROWSER_METADATA_ENUMS = {
+    '_priority': frozenset('verylow low medium high veryhigh'.split()),
+    '_resourceType': frozenset('document stylesheet image media font script texttrack xhr fetch prefetch '
+                               'eventsource websocket manifest signedexchange ping cspviolationreport '
+                               'preflight fedcm other webtransport webbundle'.split()),
+}
 RAW_ENTRY_KINDS = {
     ('request', 'url'): 'url',
     ('request', 'queryString', '*', 'value'): 'query-value',
@@ -361,14 +373,70 @@ def bank_host(host):
 
 def bank_origin(value):
     scheme, _, host = value.strip().lower().partition('://')
-    return scheme in ('http', 'https', 'ws', 'wss') and bank_host(host)
+    return scheme in URL_SCHEMES and bank_host(host)
+
+
+def decoded_path_parts(path):
+    parts = []
+    for segment in (path or '/').split('/'):
+        if re.search(r'%(?![0-9a-fA-F]{2})', segment):
+            raise InvalidInput
+        parts.append((segment, unquote(segment, errors='strict')))
+    return parts
+
+
+def path_template(parts, sources):
+    path = []
+    for raw, decoded in parts:
+        if not decoded or ROUTE_SEGMENT.fullmatch(decoded):
+            path.append(decoded)
+        else:
+            sources.remember([raw, decoded], 'url')
+            is_id = re.search(r'\d{3,}', decoded) or UUID.fullmatch(decoded) or has_email(decoded)
+            path.append('<id>' if is_id else '<token>')
+    return '/'.join(path)
+
+
+def url_details(url, sources):
+    for value in (url.username, url.password):
+        if value:
+            sources.remember_secret(unquote(value, errors='strict'), 'url')
+    if url.fragment:
+        sources.remember(unquote(url.fragment, errors='strict'), 'url')
+    path = path_template(decoded_path_parts(url.path), sources)
+    return path, encoded_pairs(url.query, sources)
+
+
+def remember_header_path(value, target, sources):
+    if not value or value == '*':
+        return
+    if not value.startswith('/') or re.search(r'[\x00-\x20\x7f#]', value):
+        raise InvalidInput
+    path, _, query = value.partition('?')
+    parts = decoded_path_parts(path)
+    path_template(parts, sources)
+    encoded_pairs(query, sources)
+    if target:
+        request_parts = decoded_path_parts(target.partition('?')[0])
+        if [decoded for _, decoded in parts] == [decoded for _, decoded in request_parts]:
+            sources.structural_occurrence(value, 'header-value')
+
+
+def remember_referer(value, sources):
+    value = value.strip(' \t')
+    if re.search(r'[\x00-\x20\x7f]', value):
+        raise InvalidInput
+    url = urlsplit(value)
+    if url.scheme in URL_SCHEMES and not url.hostname:
+        raise InvalidInput
+    url_details(url, sources)
 
 
 def url_shape(raw, include_host, sources):
     if re.search(r'[\x00-\x20\x7f]', raw):
         raise InvalidInput
     url = urlsplit(raw)
-    if url.scheme not in ('http', 'https', 'ws', 'wss'):
+    if url.scheme not in URL_SCHEMES:
         if url.scheme:
             return '<third-party>', '/<token>', [], '', ''
         raise InvalidInput
@@ -386,27 +454,11 @@ def url_shape(raw, include_host, sources):
     sources.structural_occurrence(raw, 'url')
     if not allowed:
         sources.remember(host, 'url')
-    for value in (url.username, url.password):
-        if value:
-            sources.remember_secret(unquote(value, errors='strict'), 'url')
-    if url.fragment:
-        sources.remember(unquote(url.fragment, errors='strict'), 'url')
-    path = []
-    for segment in (url.path or '/').split('/'):
-        if re.search(r'%(?![0-9a-fA-F]{2})', segment):
-            raise InvalidInput
-        decoded = unquote(segment, errors='strict')
-        if not decoded or re.fullmatch(r'[A-Za-z]{1,11}', decoded):
-            path.append(decoded)
-        else:
-            sources.remember([segment, decoded], 'url')
-            is_id = re.search(r'\d{3,}', decoded) or UUID.fullmatch(decoded) or has_email(decoded)
-            path.append('<id>' if is_id else '<token>')
     target = url.path or '/'
     if url.query:
         target += '?' + url.query
-    return (authority if allowed else '<third-party>', '/'.join(path),
-            encoded_pairs(url.query, sources), authority, target)
+    path, pairs = url_details(url, sources)
+    return authority if allowed else '<third-party>', path, pairs, authority, target
 
 
 def remember_cookie(value, sources):
@@ -433,7 +485,7 @@ def mime_header(value, header, sources):
     return message
 
 
-def header_shape(side, sources, *, response=False, authority='', target=''):
+def header_shape(side, sources, *, response=False, authority='', target='', method=''):
     names = set()
     values = defaultdict(list)
     origin_headers = RESPONSE_ORIGIN_HEADERS if response else REQUEST_ORIGIN_HEADERS
@@ -447,8 +499,7 @@ def header_shape(side, sources, *, response=False, authority='', target=''):
         # Check the original spelling before lowercasing can hide token-like casing.
         if blob_like(original, 'headers'):
             sources.remember(original, 'header-name')
-        if (name == 'content-type' and mime_type(value)) or (
-                not response and name == 'accept' and accept_type(value)):
+        if (name == 'content-type' and mime_type(value)) or (name == 'accept' and accept_type(value)):
             sources.structural_occurrence(value, 'header-value')
             if name == 'content-type' and ';' in value:
                 mime_header(value, 'Content-Type', sources)
@@ -456,12 +507,17 @@ def header_shape(side, sources, *, response=False, authority='', target=''):
             credentials = value.split(maxsplit=1)
             if len(credentials) == 2:
                 sources.remember_secret(credentials[1].strip(), 'header-value')
-        if name in origin_headers and bank_origin(value):
+        if not response and name == 'referer':
+            remember_referer(value, sources)
+        if not response and name == ':path':
+            remember_header_path(value, target, sources)
+        elif name in origin_headers and bank_origin(value):
             sources.structural_occurrence(value, 'header-value')
         elif not response and authority and (
                 (name in ('host', ':authority') and value.lower() == authority.split('://')[1])
                 or (name in ('origin', 'referer') and value.lower() == authority)
-                or (name == ':path' and value == target)):
+                or (name == ':method' and value == method and method in METHODS)
+                or (name == ':scheme' and value == authority.partition('://')[0])):
             sources.structural_occurrence(value, 'header-value')
         if name != ('set-cookie' if response else 'cookie'):
             names.add(name)
@@ -807,6 +863,43 @@ def har_start(value):
     return datetime.fromisoformat(f"{timestamp['clock']}.{fraction}{offset}")
 
 
+def chrome_initiator_urls(initiator):
+    if not isinstance(initiator, dict):
+        return
+    yield initiator.get('url')
+    stack = initiator.get('stack')
+    while isinstance(stack, dict):
+        frames = stack.get('callFrames')
+        if isinstance(frames, list):
+            for frame in frames:
+                if isinstance(frame, dict):
+                    yield frame.get('url')
+        stack = stack.get('parent')
+
+
+def exclude_browser_metadata(entry, sources):
+    for key, values in BROWSER_METADATA_ENUMS.items():
+        value = entry.get(key)
+        if isinstance(value, str) and value.casefold() in values:
+            sources.structural_occurrence(value)
+    for value in chrome_initiator_urls(entry.get('_initiator')):
+        if isinstance(value, str) and bank_origin(value):
+            sources.structural_occurrence(value)
+
+
+def exclude_cors_header_mirrors(entries, output, sources):
+    retained_names = {name for entry in output for side in CORS_HEADER_LISTS
+                      for name in entry[side]['headers']}
+    for entry in entries:
+        for side, list_headers in CORS_HEADER_LISTS.items():
+            for header in entry[side].get('headers', []):
+                if header['name'].lower() in list_headers:
+                    value = header['value']
+                    names = [name.strip().lower() for name in value.split(',')]
+                    if all(name in retained_names and HTTP_TOKEN.fullmatch(name) for name in names):
+                        sources.structural_occurrence(value, 'header-value')
+
+
 def make_skeleton(document, include_host, sources):
     log = require(require(document, dict)['log'], dict)
     entries = require(log['entries'], list)
@@ -815,6 +908,7 @@ def make_skeleton(document, include_host, sources):
     first = None
     for index, entry in enumerate(entries):
         entry = require(entry, dict)
+        exclude_browser_metadata(entry, sources)
         started = har_start(entry['startedDateTime'])
         if first is None:
             first = started
@@ -824,7 +918,7 @@ def make_skeleton(document, include_host, sources):
             raise InvalidInput
         origin, path, pairs, authority, target = url_shape(require(request['url'], str), include_host, sources)
         declared = declared_pairs(request.get('queryString', []), sources)
-        request_info, headers = header_shape(request, sources, authority=authority, target=target)
+        request_info, headers = header_shape(request, sources, authority=authority, target=target, method=method)
         content_type = mime_type(first_header(headers, 'content-type'))
         accept = accept_type(first_header(headers, 'accept'))
         if content_type:
@@ -842,6 +936,7 @@ def make_skeleton(document, include_host, sources):
                        'origin': origin, 'path': path, 'query': pair_shape(pairs or declared),
                        'request': request_info, 'response': response})
         counts[path] += 1
+    exclude_cors_header_mirrors(entries, output, sources)
     return {'entries': output, 'path_counts': [{'path': path, 'count': count}
                                                for path, count in sorted(counts.items())]}
 
@@ -922,6 +1017,21 @@ class Diagnostics:
         }, indent=2, sort_keys=True) + '\n'
 
 
+def suspect(value, field):
+    """Yield the pattern rules triggered by the candidate."""
+    if not value.isascii() or re.search(r'[\x00-\x1f\x7f]', value):
+        yield 'non-ascii-or-control'
+    if has_email(value):
+        yield 'email'
+    for rule, pattern in (('digit-run', DIGITS), ('amount', MONEY), ('jwt', JWT)):
+        if pattern.search(value):
+            yield rule
+    if DATE.search(value) or TEXT_DATE.search(value):
+        yield 'date'
+    if blob_like(value, field):
+        yield 'base64-like'
+
+
 def self_check(output, sources, diagnostics=None):
     forbidden = sources.forbidden_prefixes()
     offenders = set()
@@ -977,17 +1087,8 @@ def self_check(output, sources, diagnostics=None):
             record('invalid-structure', location, field, value, kind_hint=kind_hint)
 
     def matched_rules(value, field):
-        if not value.isascii() or re.search(r'[\x00-\x1f\x7f]', value):
-            yield 'non-ascii-or-control', ()
-        if has_email(value):
-            yield 'email', ()
-        for rule, pattern in (('digit-run', DIGITS), ('amount', MONEY), ('jwt', JWT)):
-            if pattern.search(value):
-                yield rule, ()
-        if DATE.search(value) or TEXT_DATE.search(value):
-            yield 'date', ()
-        if blob_like(value, field):
-            yield 'base64-like', ()
+        for rule in suspect(value, field):
+            yield rule, ()
         matches = copied_values(value, field)
         if diagnostics is None:
             if next(matches, None) is not None:
@@ -1044,14 +1145,51 @@ def name_word(part):
                else len(word) >= 3 or word.lower() in SHORT_NAME_WORDS for word in words)
 
 
+def structured_origin(value):
+    scheme, _, host = value.partition('://')
+    if scheme not in URL_SCHEMES:
+        return False
+    if host.startswith('[') and host.endswith(']'):
+        try:
+            return '%' not in host and bool(IPv6Address(host[1:-1]))
+        except ValueError:
+            return False
+    return len(host) <= 253 and all(HOST.fullmatch(label) for label in host.split('.'))
+
+
+def canonical_base64(value):
+    standard = value.replace('-', '+').replace('_', '/')
+    try:
+        decoded = base64.b64decode(standard + '=' * (-len(standard) % 4), validate=True)
+    except ValueError:
+        return False
+    return base64.b64encode(decoded).decode('ascii').rstrip('=') == standard
+
+
+def canonical_blob(candidate):
+    plain = candidate.rstrip('=')
+    if plain != candidate and canonical_base64(plain):
+        return True
+    # A header name can prepend a label to a 128- or 256-bit token.
+    for width in (22, 43):
+        if len(plain) == width or (len(plain) > width and plain[-width - 1] in '-_'):
+            token = plain[-width:]
+            if re.search(r'[a-z]', token) and re.search(r'[A-Z]', token) and canonical_base64(token):
+                return True
+    return False
+
+
 def blob_like(value, field):
+    if HEX_BLOB.search(value):
+        return True
+    if ((field == 'origin' and structured_origin(value))
+            or (field in ('accept', 'content_type', 'mime') and MIME.fullmatch(value))):
+        return False
     if field == 'path':
         # Keep adjacent token-like segments together because slash is a base64 character.
         value = '/'.join('.' if name_word(part) and not HEX_BLOB.search(part) else part
                          for part in value.split('/'))
         pieces = value.split('.')
-    elif field in ('accept', 'content_type', 'mime') and MIME.fullmatch(value):
-        pieces = value.removesuffix('+json').removesuffix('+xml').split('/')
     elif field == 'origin':
         pieces = value.split('/')
     else:
@@ -1062,8 +1200,11 @@ def blob_like(value, field):
             candidate = match[0].strip('/')
             if len(candidate) < 16 or (field == 'body' and candidate.casefold() in LONG_OFX_TAGS):
                 continue
-            if HEX_BLOB.search(candidate) or not (structural and all(
-                    name_word(part) for part in re.split(r'[-_]', candidate))):
+            if structural and all(name_word(part) for part in re.split(r'[-_]', candidate)):
+                continue
+            mixed_case = re.search(r'[a-z]', candidate) and re.search(r'[A-Z]', candidate)
+            if mixed_case and (re.search(r'[0-9]', candidate)
+                               or (field == 'path' and '/' in candidate) or canonical_blob(candidate)):
                 return True
     return False
 

@@ -63,6 +63,8 @@ test('reconciles opening transactions and inclusive balances in Actual', {
       actions: [{ op: 'set-split-amount', value: 100, options: { splitIndex: 1, method: 'fixed-amount' } }],
     });
     await assert.rejects(importFile(checking, true, false, '1995-01-01'), /supports opening dates/);
+    await assert.rejects(importFile({ ...checking, rows: [{ ...checking.rows[0], postedDate: '1995-01-01' }] }, true),
+      /supports opening dates/);
     assert.equal((await getRows(checkingId)).length, 1); // Only the previously seeded future row.
     assert.deepEqual(await importFile(checking, true), {
       added: 1, updated: 0, balanceCheck: { date: '2026-01-02', difference: 0n },

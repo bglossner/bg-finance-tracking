@@ -139,12 +139,9 @@ async function balanceThrough(api: StatementApi, accountId: string, date: string
   return BigInt(balance);
 }
 
-function openingDate(
-  cutoff: string, asOf: string, transactions: AccountTransaction[], opening?: AccountTransaction,
-): string {
+function openingDate(cutoff: string, asOf: string, transactionDates: string[]): string {
   // Include the statement date for statements with no activity through that day.
-  const earliest = transactions.reduce((day, row) =>
-    row.id !== opening?.id && row.date < day ? row.date : day, cutoff < asOf ? cutoff : asOf);
+  const earliest = transactionDates.reduce((day, date) => date < day ? date : day, cutoff < asOf ? cutoff : asOf);
   const date = new Date(Date.parse(earliest) - 86_400_000).toISOString().slice(0, 10);
   if (date < '1995-01-01') {
     throw new StartingBalanceError('Actual supports opening dates from 1995-01-01 onward.');
@@ -163,7 +160,7 @@ async function setOpeningTransaction(
   const amount = Number(BigInt(balance.amountMinor) - through + previous);
   if (!Number.isSafeInteger(amount)) throw new Error('Starting balance exceeds the supported range.');
 
-  const date = openingDate(cutoff, balance.date, transactions, opening);
+  const date = openingDate(cutoff, balance.date, transactions.filter(row => row.id !== opening?.id).map(row => row.date));
   const fields = { amount, date, imported_id: startingBalanceId, starting_balance_flag: true };
   if (opening) {
     if (opening.amount !== amount || opening.date !== date || opening.imported_id !== startingBalanceId || !opening.starting_balance_flag) {
@@ -205,7 +202,9 @@ export async function importIntoActual(
       const transactions = await accountTransactions(statementApi, accountId);
       const opening = startingTransaction(transactions);
       if (statement.setStartingBalance && statement.balance) {
-        openingDate(statement.cutoff, statement.balance.date, transactions, opening);
+        const dates = transactions.filter(row => row.id !== opening?.id).map(row => row.date);
+        if (!statement.skipTransactions) for (const row of rows) dates.push(row.postedDate);
+        openingDate(statement.cutoff, statement.balance.date, dates);
       }
       if (opening && !opening.imported_id) {
         await client.send('transactions-batch-update', {

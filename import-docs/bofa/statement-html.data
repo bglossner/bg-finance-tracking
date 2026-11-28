@@ -1,0 +1,15 @@
+<select id="select_transaction" class="select-bofa">
+            <option value="/myaccounts/details/card/download-transactions.go?&amp;adx=<ACCOUNT_TOKEN>&amp;stx=<STATEMENT_ID>&amp;target=downloadStmtFromDateList"
+                    name="transaction_period">Current transactions
+            </option>
+            <option value="/myaccounts/details/card/download-transactions.go?&amp;adx=<ACCOUNT_TOKEN>&amp;stx=<STATEMENT_ID>&amp;target=downloadStmtFromDateList"
+                selected="selected"
+                    name="transaction_period_date_MM_DD_YYYY"><FULL_MONTH_NAME (i.e. January)> DD, YYYY
+            </option>
+            <option value="/myaccounts/details/card/download-transactions.go?&amp;adx=<ACCOUNT_TOKEN>&amp;stx=<STATEMENT_ID>&amp;target=downloadStmtFromDateList"
+                    name="transaction_period_date_MM_DD_YYYY"><FULL_MONTH_NAME (i.e. January)> DD, YYYY
+            </option>
+            <option value="/myaccounts/details/card/download-transactions.go?&amp;adx=<ACCOUNT_TOKEN>&amp;stx=<STATEMENT_ID>&amp;target=downloadStmtFromDateList"
+                    name="transaction_period_date_MM_DD_YYYY"><FULL_MONTH_NAME (i.e. January)> DD, YYYY
+            </option>
+</select>

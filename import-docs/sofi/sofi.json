@@ -1,0 +1,216 @@
+{
+  "requests": [
+    {
+      "description": "Load initial data from SoFi for all accounts",
+      "type": "in_html",
+      "file_locations": [
+        "get_accounts.md#Get Account Information"
+      ]
+    },
+    {
+      "description": "Load transaction data from SoFi for given deposit family",
+      "file_locations": [
+        "sofi-csv.data"
+      ],
+      "request": {
+        "method": "GET",
+        "url": "https://www.sofi.com/money-transactions-hist-service/api/public/v1/accounts/transactions/export/<ACCOUNT_IDENTIFIER>?startDate=2026-10-28&endDate=2026-11-27",
+        "httpVersion": "http/2.0",
+        "headers": [
+          {
+            "name": ":authority",
+            "value": "www.sofi.com"
+          },
+          {
+            "name": ":method",
+            "value": "GET"
+          },
+          {
+            "name": ":scheme",
+            "value": "https"
+          },
+          {
+            "name": "accept",
+            "value": "text/csv"
+          },
+          {
+            "name": "accept-encoding",
+            "value": "gzip, deflate, br, zstd"
+          },
+          {
+            "name": "accept-language",
+            "value": "en-US,en;q=0.9"
+          },
+          {
+            "name": "cache-control",
+            "value": "no-cache"
+          },
+          {
+            "name": "csrf-token",
+            "value": "<CSRF_TOKEN>"
+          },
+          {
+            "name": "pragma",
+            "value": "no-cache"
+          },
+          {
+            "name": "priority",
+            "value": "u=1, i"
+          },
+          {
+            "name": "referer",
+            "value": "https://www.sofi.com/my/banking/accounts/"
+          },
+          {
+            "name": "sec-ch-ua",
+            "value": "\"Chromium\";v=\"158\", \"Not.A/Brand\";v=\"24\", \"Google Chrome\";v=\"158\""
+          },
+          {
+            "name": "sec-ch-ua-mobile",
+            "value": "?0"
+          },
+          {
+            "name": "sec-ch-ua-platform",
+            "value": "\"Windows\""
+          },
+          {
+            "name": "sec-fetch-dest",
+            "value": "empty"
+          },
+          {
+            "name": "sec-fetch-mode",
+            "value": "cors"
+          },
+          {
+            "name": "sec-fetch-site",
+            "value": "same-origin"
+          },
+          {
+            "name": "user-agent",
+            "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
+          },
+          {
+            "name": "x-datadog-origin",
+            "value": "rum"
+          },
+          {
+            "name": "x-datadog-parent-id",
+            "value": "<VALUE>"
+          },
+          {
+            "name": "x-datadog-sampling-priority",
+            "value": "1"
+          },
+          {
+            "name": "x-datadog-trace-id",
+            "value": "<VALUE>"
+          }
+        ],
+        "cookies": [],
+        "headersSize": -1,
+        "bodySize": 0
+      },
+      "response": {
+        "status": 200,
+        "statusText": "",
+        "httpVersion": "http/2.0",
+        "headers": [
+          {
+            "name": "access-control-allow-credentials",
+            "value": "true"
+          },
+          {
+            "name": "access-control-allow-origin",
+            "value": "https://sofi.com"
+          },
+          {
+            "name": "cache-control",
+            "value": "no-cache, no-store, max-age=0, must-revalidate"
+          },
+          {
+            "name": "cf-cache-status",
+            "value": "DYNAMIC"
+          },
+          {
+            "name": "cf-ray",
+            "value": "<VALUE>-LAX"
+          },
+          {
+            "name": "content-disposition",
+            "value": "attachment; filename=<ACCOUNT_IDENTIFIER_LAST_4>-<START_YYYY-MM-DD>-<END_YYYY-MM-DD>.csv"
+          },
+          {
+            "name": "content-length",
+            "value": "114"
+          },
+          {
+            "name": "content-type",
+            "value": "text/csv;charset=utf-8"
+          },
+          {
+            "name": "cross-origin-opener-policy",
+            "value": "same-origin"
+          },
+          {
+            "name": "date",
+            "value": "Sat, 28 Nov 2026 06:23:21 GMT"
+          },
+          {
+            "name": "expires",
+            "value": "0"
+          },
+          {
+            "name": "nel",
+            "value": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}"
+          },
+          {
+            "name": "pragma",
+            "value": "no-cache"
+          },
+          {
+            "name": "server",
+            "value": "cloudflare"
+          },
+          {
+            "name": "strict-transport-security",
+            "value": "max-age=31536000; includeSubDomains"
+          },
+          {
+            "name": "x-content-type-options",
+            "value": "nosniff"
+          },
+          {
+            "name": "x-envoy-upstream-service-time",
+            "value": "57"
+          },
+          {
+            "name": "x-frame-options",
+            "value": "SAMEORIGIN"
+          },
+          {
+            "name": "x-sofi-trace-id",
+            "value": "<VALUE>"
+          },
+          {
+            "name": "x-sr-id",
+            "value": "<VALUE>"
+          },
+          {
+            "name": "x-sr-trace-id",
+            "value": "<VALUE>"
+          },
+          {
+            "name": "x-xss-protection",
+            "value": "1; mode=block"
+          }
+        ],
+        "cookies": [],
+        "content": {
+          "size": 114,
+          "mimeType": "text/csv",
+          "text": "Date,Description,Type,Amount,Current balance,Status\nYYYY-MM-DD,Interest earned,INTEREST_EARNED,<AMOUNT>,<NEW_BALANCE>,Posted\n"
+        }
+      }
+    }
+  ]
+}

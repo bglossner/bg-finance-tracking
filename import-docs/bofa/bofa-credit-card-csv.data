@@ -1,0 +1,4 @@
+Posted Date,Reference Number,Payee,Address,Amount
+MM/DD/YYYY,<LARGE_NUMBER LIKE 28912892882288>,"<PAYEE>,"<ADDRESS_OR_EMPTY>",<VALUE LIKE -1,000.22 -- not sure if comma will be here or not>
+MM/DD/YYYY,<LARGE_NUMBER LIKE 28912892882288>,"<PAYEE>","<ADDRESS_OR_EMPTY>",<VALUE LIKE 1,000.22 -- not sure if comma will be here or not>
+MM/DD/YYYY,<LARGE_NUMBER LIKE 28912892882288>,"<PAYEE>","<ADDRESS_OR_EMPTY>",<VALUE LIKE -1,000.22 -- not sure if comma will be here or not>

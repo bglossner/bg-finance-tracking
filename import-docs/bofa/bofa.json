@@ -1,0 +1,642 @@
+{
+    "requests": [
+        {
+            "description": "Load initial data from BofA for all accounts",
+            "type": "request",
+            "file_locations": [
+                "get-accounts-api-call-response-keys.data",
+                "get_accounts.md"
+            ],
+            "request": {
+                "method": "POST",
+                "url": "https://secure.bankofamerica.com/ogateway/ps-dashboard/online/decorate-accounts-overview/v1?request_locale=en-us",
+                "httpVersion": "HTTP/1.1",
+                "headers": [
+                    {
+                        "name": "Accept",
+                        "value": "*/*"
+                    },
+                    {
+                        "name": "Accept-Encoding",
+                        "value": "gzip, deflate, br, zstd"
+                    },
+                    {
+                        "name": "Accept-Language",
+                        "value": "en-US,en;q=0.9"
+                    },
+                    {
+                        "name": "Cache-Control",
+                        "value": "no-cache"
+                    },
+                    {
+                        "name": "Connection",
+                        "value": "keep-alive"
+                    },
+                    {
+                        "name": "Content-Length",
+                        "value": "0"
+                    },
+                    {
+                        "name": "Content-Type",
+                        "value": "application/json"
+                    },
+                    {
+                        "name": "Host",
+                        "value": "secure.bankofamerica.com"
+                    },
+                    {
+                        "name": "Origin",
+                        "value": "https://secure.bankofamerica.com"
+                    },
+                    {
+                        "name": "Pragma",
+                        "value": "no-cache"
+                    },
+                    {
+                        "name": "Referer",
+                        "value": "https://secure.bankofamerica.com/accounts-home/?returnSiteIndicator=GAIMW&langPref=en-us&request_locale=en-us&capturemode=N&newuser=false&bcIP=F&torLsLogin=true"
+                    },
+                    {
+                        "name": "Sec-Fetch-Dest",
+                        "value": "empty"
+                    },
+                    {
+                        "name": "Sec-Fetch-Mode",
+                        "value": "cors"
+                    },
+                    {
+                        "name": "Sec-Fetch-Site",
+                        "value": "same-origin"
+                    },
+                    {
+                        "name": "User-Agent",
+                        "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
+                    },
+                    {
+                        "name": "X-Requested-With",
+                        "value": "XMLHttpRequest"
+                    },
+                    {
+                        "name": "sec-ch-ua",
+                        "value": "\"Chromium\";v=\"158\", \"Not.A/Brand\";v=\"24\", \"Google Chrome\";v=\"158\""
+                    },
+                    {
+                        "name": "sec-ch-ua-mobile",
+                        "value": "?0"
+                    },
+                    {
+                        "name": "sec-ch-ua-platform",
+                        "value": "\"Windows\""
+                    }
+                ],
+                "queryString": [
+                    {
+                        "name": "request_locale",
+                        "value": "en-us"
+                    }
+                ],
+                "cookies": [],
+                "headersSize": 14983,
+                "bodySize": 0
+            },
+            "response": {
+                "status": 200,
+                "statusText": "OK",
+                "httpVersion": "HTTP/1.1",
+                "headers": [
+                    {
+                        "name": "Access-Control-Allow-Credentials",
+                        "value": "true"
+                    },
+                    {
+                        "name": "Access-Control-Allow-Headers",
+                        "value": "x-requested-with, Content-Type"
+                    },
+                    {
+                        "name": "Access-Control-Allow-Methods",
+                        "value": "POST, GET"
+                    },
+                    {
+                        "name": "Access-Control-Allow-Origin",
+                        "value": "https://secure.bankofamerica.com"
+                    },
+                    {
+                        "name": "Access-Control-Expose-Headers",
+                        "value": "SMIDENTITY, Uniq_session_id, device-type, csrfToken, gatewayCSRFToken"
+                    },
+                    {
+                        "name": "Access-Control-Max-Age",
+                        "value": "1728000"
+                    },
+                    {
+                        "name": "Cache-Control",
+                        "value": "max-age=0, no-cache, no-store"
+                    },
+                    {
+                        "name": "Connection",
+                        "value": "keep-alive"
+                    },
+                    {
+                        "name": "Content-Encoding",
+                        "value": "gzip"
+                    },
+                    {
+                        "name": "Content-Language",
+                        "value": "en-US"
+                    },
+                    {
+                        "name": "Content-Security-Policy",
+                        "value": "default-src 'self' *.bankofamerica.com *.bac-assets.com *.bofa.com *.ml.com https: wss: data: blob:; script-src 'self' *.bankofamerica.com *.bac-assets.com *.bofa.com *.ml.com fsa.merrilledge.com *.ml.wallst.com merrilledge.com s3.amazonaws.com boa-api.arkoselabs.com cdn.cookielaw.org resources.digital-cloud-bofa.medallia.com resources.digital-cloud.medallia.com players.brightcove.net metrics.brightcove.com cdnapisec.kaltura.com tags.tiqcdn.com akamai.tiqcdn.com glance.net beta.glancecdn.net storage.glancecdn.net cct.google cdn.mplxtms.com cdn.tt.omtrdc.net data.cmcore.com data.coremetrics.com iocdn.coremetrics.com libs.coremetrics.com mc.coremetrics.com mcdata.coremetrics.com mktgcdn.coremetrics.com recs.coremetrics.com secure-cdn.mplxtms.com convertro.com stage.convertro.com idsync.rlcdn.com test.coremetrics.com testdata.coremetrics.com tmscdn.coremetrics.com www.glancecdn.net www.google-analytics.com maps.googleapis.com www.googletagmanager.com mboxedge34.tt.omtrdc.net anrdoezrs.net cj.dotomi.com cj.com cj.mplxtms.com emjcd.com mczbf.com www.mczbf.com www.knotch-cdn.com sjwoe.com secure-cdn.mplxtms.com cdn.mplxtms.com bofa.demdex.net cdnstorage.myglance.net bankofamerica.tt.omtrdc.net www.paypalobjects.com cdn-bofa.myglance.net six.cdn-net.com vjs.zencdn.net proda.baml.communify-app.com prodb.baml.communify-app.com fpjscdn.net 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' data: blob: *.bankofamerica.com *.bac-assets.com *.bofa.com *.ml.com cdn.cookielaw.org glance.net beta.glancecdn.net storage.glancecdn.net convertro.com stage.convertro.com *.ml.wallst.com idsync.rlcdn.com www.glancecdn.net cdnstorage.myglance.net www.google-analytics.com cdn-bofa.myglance.net resources.digital-cloud-bofa.medallia.com resources.digital-cloud.medallia.com proda.baml.communify-app.com prodb.baml.communify-app.com 'unsafe-inline'; worker-src 'self' blob:; frame-ancestors 'self' *.bankofamerica.com *.ml.com *.bofa.com *.merrilledge.com;"
+                    },
+                    {
+                        "name": "Content-Type",
+                        "value": "application/json"
+                    },
+                    {
+                        "name": "X-BAC-AKM-C",
+                        "value": "ON"
+                    },
+                    {
+                        "name": "X-BOA-RequestID",
+                        "value": "<REQUEST_ID>"
+                    },
+                    {
+                        "name": "X-Serviced-By",
+                        "value": "<VALUE>"
+                    }
+                ],
+                "cookies": [],
+                "content": {
+                    "size": 54527,
+                    "mimeType": "application/json",
+                    "compression": 43122,
+                    "text": "<JSON -- see get_accounts.md>"
+                }
+            }
+        },
+        {
+            "description": "Load transaction data from BofA for given deposit/banking family",
+            "type": "request",
+            "file_locations": [
+                "get_transactions.md",
+                "transactions-api-call-response-keys.data"
+            ],
+            "request": {
+                "method": "POST",
+                "url": "https://secure.bankofamerica.com/ogateway/addapi/v1/activity",
+                "httpVersion": "HTTP/1.1",
+                "headers": [
+                    {
+                        "name": "Accept",
+                        "value": "*/*"
+                    },
+                    {
+                        "name": "Accept-Encoding",
+                        "value": "gzip, deflate, br, zstd"
+                    },
+                    {
+                        "name": "Accept-Language",
+                        "value": "en-us"
+                    },
+                    {
+                        "name": "Cache-Control",
+                        "value": "no-cache"
+                    },
+                    {
+                        "name": "Connection",
+                        "value": "keep-alive"
+                    },
+                    {
+                        "name": "Content-Length",
+                        "value": "141"
+                    },
+                    {
+                        "name": "Content-type",
+                        "value": "application/json; charset=UTF-8"
+                    },
+                    {
+                        "name": "Host",
+                        "value": "secure.bankofamerica.com"
+                    },
+                    {
+                        "name": "Origin",
+                        "value": "https://secure.bankofamerica.com"
+                    },
+                    {
+                        "name": "Pragma",
+                        "value": "no-cache"
+                    },
+                    {
+                        "name": "Referer",
+                        "value": "https://secure.bankofamerica.com/deposit-details/activity/?request_locale=en-us&adx=<ADX>&source=overview&returnSiteIndicator=GAIMW"
+                    },
+                    {
+                        "name": "Sec-Fetch-Dest",
+                        "value": "empty"
+                    },
+                    {
+                        "name": "Sec-Fetch-Mode",
+                        "value": "cors"
+                    },
+                    {
+                        "name": "Sec-Fetch-Site",
+                        "value": "same-origin"
+                    },
+                    {
+                        "name": "User-Agent",
+                        "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
+                    },
+                    {
+                        "name": "request-locale",
+                        "value": "en-us"
+                    },
+                    {
+                        "name": "sec-ch-ua",
+                        "value": "\"Chromium\";v=\"158\", \"Not.A/Brand\";v=\"24\", \"Google Chrome\";v=\"158\""
+                    },
+                    {
+                        "name": "sec-ch-ua-mobile",
+                        "value": "?0"
+                    },
+                    {
+                        "name": "sec-ch-ua-platform",
+                        "value": "\"Windows\""
+                    },
+                    {
+                        "name": "x-boa-flow",
+                        "value": "SPA"
+                    }
+                ],
+                "queryString": [],
+                "cookies": [],
+                "headersSize": 14040,
+                "bodySize": 141,
+                "postData": {
+                    "mimeType": "application/json; charset=UTF-8",
+                    "text": "{\"payload\":{\"accountToken\":\"<ACCOUNT_TOKEN>\"},\"pagingRules\":{\"pagingRequestedItemCount\":50}}"
+                }
+            },
+            "response": {
+                "status": 200,
+                "statusText": "OK",
+                "httpVersion": "HTTP/1.1",
+                "headers": [
+                    {
+                        "name": "Access-Control-Allow-Credentials",
+                        "value": "true"
+                    },
+                    {
+                        "name": "Access-Control-Allow-Headers",
+                        "value": "x-requested-with, Content-Type"
+                    },
+                    {
+                        "name": "Access-Control-Allow-Methods",
+                        "value": "POST, GET"
+                    },
+                    {
+                        "name": "Access-Control-Allow-Origin",
+                        "value": "https://secure.bankofamerica.com"
+                    },
+                    {
+                        "name": "Access-Control-Expose-Headers",
+                        "value": "SMIDENTITY, Uniq_session_id, device-type, csrfToken, gatewayCSRFToken"
+                    },
+                    {
+                        "name": "Access-Control-Max-Age",
+                        "value": "1728000"
+                    },
+                    {
+                        "name": "Cache-Control",
+                        "value": "max-age=0, no-cache, no-store"
+                    },
+                    {
+                        "name": "Connection",
+                        "value": "keep-alive"
+                    },
+                    {
+                        "name": "Content-Encoding",
+                        "value": "gzip"
+                    },
+                    {
+                        "name": "Content-Language",
+                        "value": "en-US"
+                    },
+                    {
+                        "name": "Content-Length",
+                        "value": "7096"
+                    },
+                    {
+                        "name": "Content-Security-Policy",
+                        "value": "default-src 'self' *.bankofamerica.com *.bac-assets.com *.bofa.com *.ml.com https: wss: data: blob:; script-src 'self' *.bankofamerica.com *.bac-assets.com *.bofa.com *.ml.com fsa.merrilledge.com *.ml.wallst.com merrilledge.com s3.amazonaws.com boa-api.arkoselabs.com cdn.cookielaw.org resources.digital-cloud-bofa.medallia.com resources.digital-cloud.medallia.com players.brightcove.net metrics.brightcove.com cdnapisec.kaltura.com tags.tiqcdn.com akamai.tiqcdn.com glance.net beta.glancecdn.net storage.glancecdn.net cct.google cdn.mplxtms.com cdn.tt.omtrdc.net data.cmcore.com data.coremetrics.com iocdn.coremetrics.com libs.coremetrics.com mc.coremetrics.com mcdata.coremetrics.com mktgcdn.coremetrics.com recs.coremetrics.com secure-cdn.mplxtms.com convertro.com stage.convertro.com idsync.rlcdn.com test.coremetrics.com testdata.coremetrics.com tmscdn.coremetrics.com www.glancecdn.net www.google-analytics.com maps.googleapis.com www.googletagmanager.com mboxedge34.tt.omtrdc.net anrdoezrs.net cj.dotomi.com cj.com cj.mplxtms.com emjcd.com mczbf.com www.mczbf.com www.knotch-cdn.com sjwoe.com secure-cdn.mplxtms.com cdn.mplxtms.com bofa.demdex.net cdnstorage.myglance.net bankofamerica.tt.omtrdc.net www.paypalobjects.com cdn-bofa.myglance.net six.cdn-net.com vjs.zencdn.net proda.baml.communify-app.com prodb.baml.communify-app.com fpjscdn.net 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' data: blob: *.bankofamerica.com *.bac-assets.com *.bofa.com *.ml.com cdn.cookielaw.org glance.net beta.glancecdn.net storage.glancecdn.net convertro.com stage.convertro.com *.ml.wallst.com idsync.rlcdn.com www.glancecdn.net cdnstorage.myglance.net www.google-analytics.com cdn-bofa.myglance.net resources.digital-cloud-bofa.medallia.com resources.digital-cloud.medallia.com proda.baml.communify-app.com prodb.baml.communify-app.com 'unsafe-inline'; worker-src 'self' blob:; frame-ancestors 'self' *.bankofamerica.com *.ml.com *.bofa.com *.merrilledge.com;"
+                    },
+                    {
+                        "name": "Content-Type",
+                        "value": "application/json"
+                    },
+                    {
+                        "name": "Date",
+                        "value": "Sat, 28 Nov 2026 06:38:12 GMT"
+                    },
+                    {
+                        "name": "Expires",
+                        "value": "Sat, 28 Nov 2026 06:38:12 GMT"
+                    },
+                    {
+                        "name": "Pragma",
+                        "value": "no-cache"
+                    },
+                    {
+                        "name": "Strict-Transport-Security",
+                        "value": "max-age=31536000; includeSubDomains"
+                    },
+                    {
+                        "name": "Vary",
+                        "value": "Accept-Encoding"
+                    },
+                    {
+                        "name": "X-BAC-AKM-C",
+                        "value": "ON"
+                    },
+                    {
+                        "name": "X-BOA-RequestID",
+                        "value": "<REQUEST_ID>"
+                    },
+                    {
+                        "name": "X-BOA-RequestID",
+                        "value": "<REQUEST_ID>"
+                    },
+                    {
+                        "name": "X-Serviced-By",
+                        "value": "<VALUE>"
+                    },
+                    {
+                        "name": "csrfToken",
+                        "value": "<CSRF_TOKEN>"
+                    }
+                ],
+                "cookies": [],
+                "content": {
+                    "size": 50636,
+                    "mimeType": "application/json",
+                    "compression": 43540,
+                    "text": "<STRINGIFIED_JSON -- see activity-api-call>"
+                }
+            }
+        },
+        {
+            "description": "Load statement values for BofA for given credit card family",
+            "type": "request",
+            "file_locations": [
+                "get_transactions.md#Getting Statements for Credit Cards",
+                "statement-html.data"
+            ],
+            "request": {
+                "method": "GET",
+                "url": "https://secure.bankofamerica.com/myaccounts/brain/redirect.go?source=overview&target=acctDetails&request_locale=en-us&adx=<ACCOUNT_TOKEN>",
+                "httpVersion": "HTTP/1.1",
+                "headers": [
+                    {
+                        "name": "Accept",
+                        "value": "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+                    },
+                    {
+                        "name": "Accept-Encoding",
+                        "value": "gzip, deflate, br, zstd"
+                    },
+                    {
+                        "name": "Accept-Language",
+                        "value": "en-US,en;q=0.9"
+                    },
+                    {
+                        "name": "Cache-Control",
+                        "value": "no-cache"
+                    },
+                    {
+                        "name": "Connection",
+                        "value": "keep-alive"
+                    },
+                    {
+                        "name": "Host",
+                        "value": "secure.bankofamerica.com"
+                    },
+                    {
+                        "name": "Pragma",
+                        "value": "no-cache"
+                    },
+                    {
+                        "name": "Referer",
+                        "value": "https://secure.bankofamerica.com/accounts-home/?returnSiteIndicator=GAIMW&langPref=en-us&request_locale=en-us&capturemode=N&newuser=false&bcIP=F&torLsLogin=true&page_msg=signoff&request_locale=en_US"
+                    },
+                    {
+                        "name": "Sec-Fetch-Dest",
+                        "value": "document"
+                    },
+                    {
+                        "name": "Sec-Fetch-Mode",
+                        "value": "navigate"
+                    },
+                    {
+                        "name": "Sec-Fetch-Site",
+                        "value": "same-origin"
+                    },
+                    {
+                        "name": "Sec-Fetch-User",
+                        "value": "?1"
+                    },
+                    {
+                        "name": "Upgrade-Insecure-Requests",
+                        "value": "1"
+                    },
+                    {
+                        "name": "User-Agent",
+                        "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
+                    },
+                    {
+                        "name": "sec-ch-ua",
+                        "value": "\"Chromium\";v=\"158\", \"Not.A/Brand\";v=\"24\", \"Google Chrome\";v=\"158\""
+                    },
+                    {
+                        "name": "sec-ch-ua-mobile",
+                        "value": "?0"
+                    },
+                    {
+                        "name": "sec-ch-ua-platform",
+                        "value": "\"Windows\""
+                    }
+                ],
+                "cookies": [],
+                "headersSize": 15215,
+                "bodySize": 0
+            },
+            "response": {
+                "status": 200,
+                "statusText": "OK",
+                "httpVersion": "HTTP/1.1",
+                "headers": [
+                    {
+                        "name": "Content-Type",
+                        "value": "text/html;charset=ISO-8859-1"
+                    },
+                    {
+                        "name": "X-BOA-RequestID",
+                        "value": "<REQUEST_ID>"
+                    }
+                ],
+                "cookies": [],
+                "content": {
+                    "size": 126583,
+                    "mimeType": "text/html",
+                    "compression": 99776,
+                    "text": "<HTML -- shortened in statement-html.data>"
+                }
+            }
+        },
+        {
+            "description": "Load transaction data from BofA for given credit card family",
+            "type": "request",
+            "file_locations": [
+                "bofa-credit-card-csv.data"
+            ],
+            "request": {
+                "method": "GET",
+                "url": "https://secure.bankofamerica.com/myaccounts/details/card/download-transactions.go?&adx=<ACCOUNT_TOKEN>&stx=<STATEMENT_ID>&target=downloadStmtFromDateList&formatType=csv",
+                "httpVersion": "HTTP/1.1",
+                "headers": [
+                    {
+                        "name": "Accept",
+                        "value": "text/html,application/xhtml+xml,application/xml;q=0.9,image/jxl,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+                    },
+                    {
+                        "name": "Accept-Encoding",
+                        "value": "gzip, deflate, br, zstd"
+                    },
+                    {
+                        "name": "Accept-Language",
+                        "value": "en-US,en;q=0.9"
+                    },
+                    {
+                        "name": "Cache-Control",
+                        "value": "no-cache"
+                    },
+                    {
+                        "name": "Connection",
+                        "value": "keep-alive"
+                    },
+                    {
+                        "name": "Host",
+                        "value": "secure.bankofamerica.com"
+                    },
+                    {
+                        "name": "Pragma",
+                        "value": "no-cache"
+                    },
+                    {
+                        "name": "Referer",
+                        "value": "https://secure.bankofamerica.com/myaccounts/details/card/account-details.go?&adx=<ACCOUNT_TOKEN>&stx=<STATEMENT_ID>&target=stmtFromDateList"
+                    },
+                    {
+                        "name": "Sec-Fetch-Dest",
+                        "value": "document"
+                    },
+                    {
+                        "name": "Sec-Fetch-Mode",
+                        "value": "navigate"
+                    },
+                    {
+                        "name": "Sec-Fetch-Site",
+                        "value": "same-origin"
+                    },
+                    {
+                        "name": "Sec-Fetch-User",
+                        "value": "?1"
+                    },
+                    {
+                        "name": "Upgrade-Insecure-Requests",
+                        "value": "1"
+                    },
+                    {
+                        "name": "User-Agent",
+                        "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
+                    },
+                    {
+                        "name": "sec-ch-ua",
+                        "value": "\"Chromium\";v=\"158\", \"Not.A/Brand\";v=\"24\", \"Google Chrome\";v=\"158\""
+                    },
+                    {
+                        "name": "sec-ch-ua-mobile",
+                        "value": "?0"
+                    },
+                    {
+                        "name": "sec-ch-ua-platform",
+                        "value": "\"Windows\""
+                    }
+                ],
+                "cookies": [],
+                "headersSize": 15423,
+                "bodySize": 0
+            },
+            "response": {
+                "status": 200,
+                "statusText": "OK",
+                "httpVersion": "HTTP/1.1",
+                "headers": [
+                    {
+                        "name": "Cache-Control",
+                        "value": "max-age=0, no-cache, no-store"
+                    },
+                    {
+                        "name": "Connection",
+                        "value": "keep-alive"
+                    },
+                    {
+                        "name": "Content-Disposition",
+                        "value": "attachment;filename=\"<FULL_MONTH_NAME>YYYY_<LAST_4_ACCOUNT_NUMBER>.csv\""
+                    },
+                    {
+                        "name": "Content-Language",
+                        "value": "en-US"
+                    },
+                    {
+                        "name": "Content-Length",
+                        "value": "1275"
+                    },
+                    {
+                        "name": "Content-Security-Policy",
+                        "value": "default-src 'self' *.bankofamerica.com *.bac-assets.com *.bofa.com *.ml.com https: wss: data: blob:; script-src 'self' *.bankofamerica.com *.bac-assets.com *.bofa.com *.ml.com fsa.merrilledge.com *.ml.wallst.com merrilledge.com s3.amazonaws.com boa-api.arkoselabs.com cdn.cookielaw.org resources.digital-cloud-bofa.medallia.com resources.digital-cloud.medallia.com players.brightcove.net metrics.brightcove.com cdnapisec.kaltura.com tags.tiqcdn.com akamai.tiqcdn.com glance.net beta.glancecdn.net storage.glancecdn.net cct.google cdn.mplxtms.com cdn.tt.omtrdc.net data.cmcore.com data.coremetrics.com iocdn.coremetrics.com libs.coremetrics.com mc.coremetrics.com mcdata.coremetrics.com mktgcdn.coremetrics.com recs.coremetrics.com secure-cdn.mplxtms.com convertro.com stage.convertro.com idsync.rlcdn.com test.coremetrics.com testdata.coremetrics.com tmscdn.coremetrics.com www.glancecdn.net www.google-analytics.com maps.googleapis.com www.googletagmanager.com mboxedge34.tt.omtrdc.net anrdoezrs.net cj.dotomi.com cj.com cj.mplxtms.com emjcd.com mczbf.com www.mczbf.com www.knotch-cdn.com sjwoe.com secure-cdn.mplxtms.com cdn.mplxtms.com bofa.demdex.net cdnstorage.myglance.net bankofamerica.tt.omtrdc.net www.paypalobjects.com cdn-bofa.myglance.net six.cdn-net.com vjs.zencdn.net proda.baml.communify-app.com prodb.baml.communify-app.com fpjscdn.net 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' data: blob: *.bankofamerica.com *.bac-assets.com *.bofa.com *.ml.com cdn.cookielaw.org glance.net beta.glancecdn.net storage.glancecdn.net convertro.com stage.convertro.com *.ml.wallst.com idsync.rlcdn.com www.glancecdn.net cdnstorage.myglance.net www.google-analytics.com cdn-bofa.myglance.net resources.digital-cloud-bofa.medallia.com resources.digital-cloud.medallia.com proda.baml.communify-app.com prodb.baml.communify-app.com 'unsafe-inline'; worker-src 'self' blob:; frame-ancestors 'self' *.bankofamerica.com *.ml.com *.bofa.com *.merrilledge.com;"
+                    },
+                    {
+                        "name": "Content-Type",
+                        "value": "application/csv; charset=UTF-8"
+                    },
+                    {
+                        "name": "X-BAC-AKM-C",
+                        "value": "ON"
+                    },
+                    {
+                        "name": "X-BOA-RequestID",
+                        "value": "<REQUEST_ID>"
+                    },
+                    {
+                        "name": "X-Content-Type-Options",
+                        "value": "nosniff"
+                    },
+                    {
+                        "name": "X-Frame-Options",
+                        "value": "SAMEORIGIN"
+                    },
+                    {
+                        "name": "X-XSS-Protection",
+                        "value": "1; mode=block"
+                    }
+                ],
+                "cookies": [],
+                "content": {
+                    "size": 0,
+                    "mimeType": "application/csv",
+                    "compression": 0,
+                    "text": "<SEE bofa-credit-card-csv.data>"
+                }
+            }
+        }
+    ]
+}

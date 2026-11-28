@@ -1,0 +1,19 @@
+[
+  "$.decorate-accounts-overview",
+  "$.decorate-accounts-overview.global-navigation.productCategories.0.categoryType",
+  "$.decorate-accounts-overview.global-navigation.productCategories.0.accounts",
+  "$.decorate-accounts-overview.global-navigation.productCategories.0.accounts.0",
+  "$.decorate-accounts-overview.global-navigation.productCategories.0.accounts.0.name",
+  "$.decorate-accounts-overview.global-navigation.productCategories.0.accounts.0.adx",
+  "$.decorate-accounts-overview.global-navigation.productCategories.0.accounts.0.balance",
+  "$.decorate-accounts-overview.global-navigation.productCategories.0.accounts.1",
+  "$.decorate-accounts-overview.global-navigation.productCategories.0.accounts.1.name",
+  "$.decorate-accounts-overview.global-navigation.productCategories.0.accounts.1.adx",
+  "$.decorate-accounts-overview.global-navigation.productCategories.0.accounts.1.balance",
+  "$.decorate-accounts-overview.global-navigation.productCategories.1.categoryType",
+  "$.decorate-accounts-overview.global-navigation.productCategories.1.accounts",
+  "$.decorate-accounts-overview.global-navigation.productCategories.1.accounts.0",
+  "$.decorate-accounts-overview.global-navigation.productCategories.1.accounts.0.name",
+  "$.decorate-accounts-overview.global-navigation.productCategories.1.accounts.0.adx",
+  "$.decorate-accounts-overview.global-navigation.productCategories.1.accounts.0.balance"
+]

@@ -251,3 +251,48 @@ for (const [identifier, expectedLast4, accepted] of [
     assertValidation(ofx, accepted ? { ok: true } : { ok: false, reason: 'wrong-account' }, 'card', expectedLast4);
   });
 }
+
+test('characterizes a month-end default and an inclusive single-day filename', () => {
+  const today = '2024-03-31';
+  assertRange(today, null, '2024-03-01');
+  assertRange(today, today, '2024-03-28');
+  assert.equal(filename('0012', today, today), 'Chase0012_Activity_2024-03-31_2024-03-31.QFX');
+});
+
+test('characterizes exact card URL and deposit form serialization', () => {
+  const card = downloadRequest(account, from, to, token);
+  assert.equal(new URL(card.path, 'https://secure.chase.com').href,
+    'https://secure.chase.com/svc/rr/accounts/secure/gateway/credit-card/transactions/inquiry-maintenance/digital-transaction-activity/v1/transaction-activities' +
+    '?digital-account-identifier=synthetic%26account%3D1&start-date=20240227&end-date=20240302&' +
+    'account-activity-download-type-code=QFX&csrftoken=synthetic%2B%2F%26token&submit=Submit&eligibility-indicator=true');
+  assert.equal(card.headers.Accept, 'application/json, text/plain, */*');
+
+  const deposit = downloadRequest({ id, family: 'deposit' }, from, to, token);
+  assert.equal(new URL(deposit.path, 'https://secure.chase.com').href,
+    'https://secure.chase.com/svc/rr/accounts/secure/v1/account/activity/download/dda/list');
+  assert.equal(deposit.body, 'transactionType=ALL&filterTranType=ALL&statementPeriodId=ALL&downloadType=QFX&' +
+    'accountId=synthetic%26account%3D1&dateHi=20240302&dateLo=20240227&csrftoken=synthetic%2B%2F%26token&submit=Submit');
+});
+
+test('characterizes numeric zero, duplicate account IDs and masked types', () => {
+  const personalTileGroups = [{ depositAccountTileIds: [1, 2], creditCardAccountTileIds: [2, 3, 4] }];
+  const accountTiles = [
+    { tileId: 1, accountId: 0, accountTileDetailType: 'savings', mask: '••0012' },
+    { tileId: 2, accountId: 'ambiguous', mask: 'XXXX5678' },
+    { tileId: 3, accountId: '0', mask: 'XXXX5678' },
+    { tileId: 4, accountId: 'opaque', mask: '*x-5678', nickname: 'Ignored nickname' },
+  ];
+  const payload = { cache: [{ response: { accountTiles, personalTileGroups } }] };
+  assert.equal(JSON.stringify(readAccounts(payload)), JSON.stringify([
+    { id: '0', family: 'deposit', last4: '0012', label: 'Savings …0012' },
+    { id: 'opaque', family: 'card', last4: '5678', label: 'Credit card …5678' },
+  ]));
+});
+
+test('characterizes the deposit fixture with an explicit account suffix', () => {
+  const deposit = read('../../import-docs/chase/non-credit-qfx.data');
+  const explicitSuffix = deposit.replace(/<ACCTID>[^<\r\n]+/, '<ACCTID>12345678-9012');
+  assertValidation(deposit, { ok: false, reason: 'wrong-family' }, 'card', '1234');
+  assertValidation(explicitSuffix, { ok: true }, 'deposit', '9012');
+  assertValidation(explicitSuffix, { ok: false, reason: 'wrong-account' }, 'deposit', '5678');
+});

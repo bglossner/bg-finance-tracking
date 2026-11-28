@@ -2,30 +2,32 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants, type Stats } from 'node:fs';
 import { lstat, mkdtemp, open, readdir, realpath, rename, rmdir, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
-import type { ImportRow } from './actual.js';
+import { AmbiguousStartingBalance, type ImportResult, type ImportRow, type StatementBalance, type StatementImport } from './actual.js';
 import { InvalidStatement } from './importers/actual-file-parser.js';
-import { matchStatement, parseAccounts, parseStatement } from './importers/chase.js';
+import { matchStatement, parseAccounts, parseStatement, readStatementBalance } from './importers/chase.js';
 import { nextExportWindow } from './state/export-window.js';
 import {
-  createDataRoot, isMissing, loadAccounts, privateDirectory, saveAccounts, syncDirectory, withIntakeLock,
+  createDataRoot, isMissing, loadAccounts, privateDirectory, saveAccounts, syncDirectory, withIntakeLock, type AccountState,
 } from './state/intake-state.js';
 
 type Routes = ReturnType<typeof parseAccounts>;
-type Import = (account: string, rows: ImportRow[]) => Promise<{ added: number; updated: number }>;
-
-interface Options {
+interface ImportOptions {
   dataRoot: string;
   repository: string;
   routes: Routes;
   cutoff: string;
   budgetIdentity: string;
-  minimumAgeSeconds: number;
-  staleDays: number;
-  acceptedExtensions?: readonly string[];
   now?: Date;
   report: (message: string) => void;
   warn: (message: string) => void;
-  importRows: Import;
+  importRows: (account: string, rows: ImportRow[], statement: StatementImport) => Promise<ImportResult>;
+  setStartingBalance?: string;
+}
+
+interface Options extends ImportOptions {
+  minimumAgeSeconds: number;
+  staleDays: number;
+  acceptedExtensions?: readonly string[];
   parseRows?: typeof parseStatement;
 }
 
@@ -35,13 +37,18 @@ interface Candidate {
   alias?: string;
 }
 
-interface Job extends Candidate {
+interface StatementJob {
   alias: string;
   hash: string;
   rows: ImportRow[];
+  extension: string;
+  balance?: StatementBalance;
+}
+
+type Job = Candidate & StatementJob & {
   earliest?: string;
   latest?: string;
-}
+};
 
 function sameFile(before: Stats, after: Stats): boolean {
   return before.dev === after.dev && before.ino === after.ino && before.size === after.size &&
@@ -218,24 +225,25 @@ async function prepare(candidate: Candidate, options: Options, blocked: Set<stri
     throw error;
   }
   return {
-    ...candidate, alias, rows, ...dates(rows),
+    ...candidate, alias, rows, extension, ...dates(rows), balance: readStatementBalance(contents, extension),
     hash: createHash('sha256').update(contents).digest('hex'),
   };
 }
 
-export async function runInbox(options: Options): Promise<boolean> {
+async function withAccounts<T>(options: ImportOptions, run: (
+  context: { root: string; state: string; accounts: Map<string, AccountState>; identities: Map<string, string>; now: Date },
+) => Promise<T>): Promise<T> {
   if (!options.routes.size || [...options.routes.keys()].some(alias => !safeAlias.test(alias))) {
     throw new Error('Configure at least one alias using letters, digits, underscores or hyphens.');
+  }
+  if (options.setStartingBalance !== undefined && !options.routes.has(options.setStartingBalance)) {
+    throw new Error('Unknown account alias for --set-starting-balance.');
   }
   const now = options.now ?? new Date();
   const root = await createDataRoot(options.dataRoot, options.repository);
   const state = await privateDirectory(join(root, 'state'));
   return withIntakeLock(state, async () => {
-    const inbox = await privateDirectory(join(root, 'inbox'));
-    const processing = await privateDirectory(join(inbox, '.processing'));
-    const archive = await privateDirectory(join(root, 'archive'));
-    const rejected = await privateDirectory(join(root, 'quarantine'));
-    let accounts = await loadAccounts(state, options.warn);
+    const accounts = await loadAccounts(state, options.warn);
     const identities = new Map([...options.routes].map(([alias, route]) => [alias,
       createHash('sha256').update(JSON.stringify([options.budgetIdentity, route.actualAccount, route.last4])).digest('hex'),
     ]));
@@ -243,6 +251,77 @@ export async function runInbox(options: Options): Promise<boolean> {
       const saved = accounts.get(alias);
       if (saved && saved.identity !== identity) throw new Error('An account destination changed. Use a separate intake data root.');
     }
+    return run({ root, state, accounts, identities, now });
+  });
+}
+
+function signedAmount(cents: bigint): string {
+  const value = (cents < 0n ? -cents : cents).toString().padStart(3, '0');
+  return `${cents < 0n ? '-' : '+'}${value.slice(0, -2)}.${value.slice(-2)}`;
+}
+
+function reportBalance(options: ImportOptions, job: StatementJob, result: ImportResult): void {
+  const { alias, extension } = job;
+  const check = result.balanceCheck;
+  if (check?.difference === 0n) options.report(`${alias}: balance check: matches as of ${check.date}`);
+  else if (check) {
+    options.report(`${alias}: balance check: off by ${signedAmount(check.difference)} as of ${check.date}`);
+    options.report(`${alias}: to rebase, use --set-starting-balance ${alias} with a fresh QFX or OFX.`);
+  } else {
+    options.report(`${alias}: balance check: skipped (${extension === '.csv' ? 'CSV has no statement balance' : 'no valid LEDGERBAL'}).`);
+  }
+}
+
+async function importJob(
+  options: ImportOptions, job: StatementJob, forced: boolean, previous: AccountState | undefined,
+  identity: string, now: Date, save: (checkpoint: AccountState) => Promise<void>,
+): Promise<{ result: ImportResult; duplicate: boolean }> {
+  const duplicate = previous?.importedHashes.includes(job.hash) ?? false;
+  const result = duplicate && !job.balance ? { added: 0, updated: 0 } :
+    await options.importRows(options.routes.get(job.alias)!.actualAccount, job.rows, {
+      balance: job.balance, cutoff: options.cutoff, setStartingBalance: Boolean(job.balance && (!previous || forced)),
+      skipTransactions: duplicate,
+    });
+  const check = result.balanceCheck;
+  if (!duplicate || check) {
+    const latest = dates(job.rows).latest;
+    const latestPostedDate = [previous?.latestPostedDate, latest].filter(Boolean).sort().at(-1);
+    await save({
+      identity, latestPostedDate: duplicate ? previous?.latestPostedDate : latestPostedDate,
+      lastRun: duplicate ? previous!.lastRun : now.toISOString(),
+      importedHashes: duplicate ? previous!.importedHashes : [...previous?.importedHashes ?? [], job.hash],
+      lastBalanceCheck: check ? { date: check.date, status: check.difference === 0n ? 'ok' : 'mismatch' } : previous?.lastBalanceCheck,
+    });
+  }
+  reportBalance(options, job, result);
+  return { result, duplicate };
+}
+
+async function saveCheckpoint(state: string, accounts: Map<string, AccountState>, alias: string, checkpoint: AccountState) {
+  const next = new Map(accounts).set(alias, checkpoint);
+  await saveAccounts(state, next);
+  accounts.set(alias, checkpoint);
+}
+
+export async function runSingleStatement(options: ImportOptions, job: StatementJob): Promise<ImportResult> {
+  return withAccounts(options, async ({ state, accounts, identities, now }) => {
+    const forced = options.setStartingBalance !== undefined;
+    if (forced && (options.setStartingBalance !== job.alias || !job.balance)) {
+      throw new Error('Supply a statement with valid LEDGERBAL for the selected alias.');
+    }
+    const { result } = await importJob(options, job, forced, accounts.get(job.alias), identities.get(job.alias)!, now,
+      checkpoint => saveCheckpoint(state, accounts, job.alias, checkpoint));
+    return result;
+  });
+}
+
+export async function runInbox(options: Options): Promise<boolean> {
+  return withAccounts(options, async ({ root, state, accounts: initialAccounts, identities, now }) => {
+    let accounts = initialAccounts;
+    const inbox = await privateDirectory(join(root, 'inbox'));
+    const processing = await privateDirectory(join(inbox, '.processing'));
+    const archive = await privateDirectory(join(root, 'archive'));
+    const rejected = await privateDirectory(join(root, 'quarantine'));
     const intakeDevice = (await stat(processing)).dev;
     if ((await stat(archive)).dev !== intakeDevice || (await stat(rejected)).dev !== intakeDevice) {
       throw new Error('Inbox, archive and quarantine must be on the same filesystem.');
@@ -268,50 +347,52 @@ export async function runInbox(options: Options): Promise<boolean> {
       }
     }
     jobs.sort((a, b) => (a.earliest ?? '').localeCompare(b.earliest ?? '') || (a.latest ?? '').localeCompare(b.latest ?? ''));
-    for (const [alias, route] of options.routes) {
+    for (const alias of options.routes.keys()) {
       let files = 0;
       let duplicates = 0;
       let added = 0;
       let updated = 0;
       let skipped = 0;
-      for (const job of jobs.filter(job => job.alias === alias && !blocked.has(alias) && stateAvailable)) {
+      const accountJobs = jobs.filter(job => job.alias === alias && !blocked.has(alias) && stateAvailable);
+      let forced: Job | undefined;
+      if (options.setStartingBalance === alias) {
+        for (const job of accountJobs) {
+          if (job.balance && (!forced || job.balance.date >= forced.balance!.date)) forced = job;
+        }
+        if (forced) {
+          // Calculate from the newest ledger snapshot after importing the other files.
+          accountJobs.splice(accountJobs.indexOf(forced), 1);
+          accountJobs.push(forced);
+        } else {
+          options.warn(`${alias}: starting balance was not set. Drop a completed QFX or OFX with valid LEDGERBAL and retry.`);
+          success = false;
+        }
+      }
+      for (const job of accountJobs) {
         try {
           if (!await unchanged(job)) throw new Error('Claimed file changed.');
-          const previous = accounts.get(alias);
-          const duplicate = previous?.importedHashes.includes(job.hash) ?? false;
           const year = (job.latest ?? now.toISOString()).slice(0, 4);
           const accountArchive = await privateDirectory(join(archive, alias));
           const annualArchive = await privateDirectory(join(accountArchive, year));
           if ((await stat(annualArchive)).dev !== intakeDevice) throw new Error('Archive crosses filesystems.');
-          if (duplicate) {
-            duplicates++;
-            skipped += job.rows.length;
-          } else {
-            const result = await options.importRows(route.actualAccount, job.rows);
-            added += result.added;
-            updated += result.updated;
-            skipped += Math.max(0, job.rows.length - result.added - result.updated);
-            const latestPostedDate = [previous?.latestPostedDate, job.latest].sort().filter(Boolean).at(-1);
-            const next = new Map(accounts);
-            next.set(alias, {
-              identity: identities.get(alias)!, latestPostedDate, lastRun: now.toISOString(), importedHashes: [...previous?.importedHashes ?? [], job.hash],
-            });
-            try {
-              await saveAccounts(state, next);
-              accounts.set(alias, next.get(alias)!);
-            } catch (error) {
+          const { result, duplicate } = await importJob(options, job, job === forced, accounts.get(alias), identities.get(alias)!, now,
+            checkpoint => saveCheckpoint(state, accounts, alias, checkpoint).catch(async error => {
               // A directory fsync can fail after rename. Re-read the installed
               // state before another account writes a replacement.
               stateAvailable = false;
               accounts = await loadAccounts(state, options.warn);
               stateAvailable = true;
               throw error;
-            }
-          }
+            }));
+          if (duplicate) duplicates++;
+          added += result.added;
+          updated += result.updated;
+          skipped += Math.max(0, job.rows.length - result.added - result.updated);
           await move(job, await destination(annualArchive, job, duplicate ? '-duplicate' : ''));
           files++;
-        } catch {
-          options.warn(`${alias}: intake failed. Check the budget connection and data directories before retrying.`);
+        } catch (error) {
+          options.warn(`${alias}: ${error instanceof AmbiguousStartingBalance ? error.message :
+            'intake failed. Check the budget connection and data directories before retrying.'}`);
           success = false;
           break;
         }

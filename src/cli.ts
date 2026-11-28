@@ -1,31 +1,55 @@
 import { readFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
-import { importIntoActual, parseImportRows, readImportConfig, readStatementImportConfig } from './actual.js';
+import { AmbiguousStartingBalance, importIntoActual, parseImportRows, readImportConfig } from './actual.js';
+import { runSingleStatement } from './inbox.js';
+import { quietActual, statementSettings } from './statement-config.js';
 
 async function main() {
   let job;
   try {
     const { values, positionals } = parseArgs({
       allowPositionals: true,
-      options: { 'dry-run': { type: 'boolean' }, file: { type: 'string' }, account: { type: 'string' } },
+      options: {
+        'dry-run': { type: 'boolean' }, file: { type: 'string' }, account: { type: 'string' },
+        'set-starting-balance': { type: 'string' },
+      },
     });
     if (positionals[0] === 'import' && (positionals.length !== 2 || values.file !== undefined || values.account !== undefined)) {
       if (positionals.length !== 1 || !values.file) {
-        throw new Error('Usage: cli.js import --file PATH [--account ALIAS] [--dry-run]');
+        throw new Error('Usage: cli.js import --file PATH [--account ALIAS] [--dry-run | --set-starting-balance ALIAS]');
       }
       const { chase, parseAccounts } = await import('./importers/chase.js');
       const config = await readFile(process.env.BGFIN_ACCOUNTS_FILE ?? 'config/accounts.json', 'utf8').catch(() => {
         throw new Error('Cannot read accounts configuration. Set BGFIN_ACCOUNTS_FILE or create config/accounts.json.');
       });
-      const { account, rows } = await chase.parse(values.file, { routes: parseAccounts(config), alias: values.account });
+      const routes = parseAccounts(config);
+      const setStartingBalance = values['set-starting-balance'];
+      if (setStartingBalance !== undefined && (values['dry-run'] || (values.account !== undefined && values.account !== setStartingBalance))) {
+        throw new Error('--set-starting-balance requires a live import for the same alias as --account.');
+      }
+      const statement = await quietActual(() => chase.parse(values.file!, { routes, alias: values.account ?? setStartingBalance }));
+      const { rows } = statement;
       if (values['dry-run']) {
         const dates = rows.map(row => row.postedDate).sort();
         console.log(JSON.stringify({ validated: rows.length, from: dates[0] ?? null, through: dates.at(-1) ?? null }));
         return;
       }
-      job = { rows, config: readStatementImportConfig(process.env, account) };
+      const options = await statementSettings(process.env, routes);
+      if (setStartingBalance !== undefined && !statement.balance) throw new Error('Supply a statement with valid LEDGERBAL for the selected alias.');
+      const report = console.log.bind(console);
+      const warn = console.error.bind(console);
+      try {
+        const { added, updated } = await quietActual(() => runSingleStatement({ ...options, report, warn, setStartingBalance }, statement));
+        console.log(JSON.stringify({ added, updated }));
+      } catch (error) {
+        console.error(error instanceof AmbiguousStartingBalance ? error.message :
+          'Actual import failed. Check the server, budget configuration and account mapping.');
+        process.exitCode = 1;
+      }
+      return;
     } else {
       if (values.file !== undefined || values.account !== undefined) throw new Error('Use --file and --account with the import command.');
+      if (values['set-starting-balance'] !== undefined) throw new Error('Use --set-starting-balance with the statement import command.');
       if (positionals.length === 0 && values['dry-run']) {
         console.log('Usage: cli.js [--dry-run] ACCOUNT_ALIAS TRANSACTIONS.json');
         return;
@@ -65,4 +89,5 @@ async function main() {
   else console.error('Actual import failed. Check the server, budget configuration and account mapping.');
 }
 
+process.umask(0o077);
 await main();

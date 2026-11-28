@@ -3,6 +3,34 @@ import type { NormalizedTransaction } from './importers/source-adapter.js';
 
 type ActualApi = Pick<typeof Actual,
   'init' | 'downloadBudget' | 'getAccounts' | 'importTransactions' | 'sync' | 'shutdown'>;
+type StatementApi = ActualApi & Pick<typeof Actual,
+  'getTransactions' | 'getAccountBalance' | 'updateTransaction' | 'addTransactions' | 'getCategories'>;
+
+const startingBalanceId = 'bgfin:starting-balance';
+
+export interface StatementBalance {
+  date: string;
+  amountMinor: number;
+}
+
+export interface StatementImport {
+  balance?: StatementBalance;
+  cutoff: string;
+  setStartingBalance: boolean;
+  skipTransactions: boolean;
+}
+
+export interface ImportResult {
+  added: number;
+  updated: number;
+  balanceCheck?: { date: string; difference: bigint };
+}
+
+export class AmbiguousStartingBalance extends Error {
+  constructor() {
+    super('Starting balance is ambiguous. Keep one standalone opening transaction before retrying.');
+  }
+}
 
 interface ImportConnection {
   serverURL: string;
@@ -69,7 +97,7 @@ export function parseImportRows(contents: string): ImportRow[] {
         typeof postedDate !== 'string' || !/^[1-9]\d{3}-\d{2}-\d{2}$/.test(postedDate) ||
         !Number.isFinite(Date.parse(postedDate)) ||
         new Date(postedDate).toISOString().slice(0, 10) !== postedDate ||
-        typeof imported_id !== 'string' || !imported_id.trim() || ids.has(imported_id) ||
+        typeof imported_id !== 'string' || !imported_id.trim() || imported_id === startingBalanceId || ids.has(imported_id) ||
         (payee !== undefined && typeof payee !== 'string')) {
       throw new Error(`Transaction ${index + 1} has an invalid amount, date, source ID or payee.`);
     }
@@ -78,7 +106,74 @@ export function parseImportRows(contents: string): ImportRow[] {
   });
 }
 
-export async function importIntoActual(api: ActualApi, config: ImportConfig, rows: ImportRow[]) {
+interface AccountTransaction {
+  id: string;
+  date: string;
+  amount: number;
+  imported_id?: string | null;
+  starting_balance_flag?: boolean | null;
+  is_parent?: boolean;
+  is_child?: boolean;
+  transfer_id?: string | null;
+  subtransactions?: AccountTransaction[];
+}
+
+function startingTransaction(transactions: AccountTransaction[]): AccountTransaction | undefined {
+  const candidates = transactions.flatMap(row => [row, ...row.subtransactions ?? []])
+    .filter(row => row.starting_balance_flag || row.imported_id === startingBalanceId);
+  if (candidates.length > 1 ||
+      candidates.some(row => row.is_parent || row.is_child || row.subtransactions?.length || row.transfer_id)) {
+    throw new AmbiguousStartingBalance();
+  }
+  return candidates[0];
+}
+
+async function accountTransactions(api: StatementApi, accountId: string): Promise<AccountTransaction[]> {
+  // Actual treats empty bounds as unbounded and returns grouped splits.
+  return api.getTransactions(accountId, '', '');
+}
+
+async function balanceThrough(api: StatementApi, accountId: string, date: string): Promise<bigint> {
+  const [year, month, day] = date.split('-').map(Number);
+  // Actual converts Date back to the local calendar day in its inclusive query.
+  const balance = await api.getAccountBalance(accountId, new Date(year, month - 1, day, 12));
+  if (!Number.isSafeInteger(balance)) throw new Error('Actual balance exceeds the supported range.');
+  return BigInt(balance);
+}
+
+async function setOpeningTransaction(
+  api: StatementApi, accountId: string, offbudget: boolean | undefined, balance: StatementBalance, cutoff: string,
+): Promise<void> {
+  const transactions = await accountTransactions(api, accountId);
+  const opening = startingTransaction(transactions);
+  const through = await balanceThrough(api, accountId, balance.date);
+  if (opening && !Number.isSafeInteger(opening.amount)) throw new Error('Actual opening amount exceeds the supported range.');
+  const previous = opening && opening.date <= balance.date ? BigInt(opening.amount) : 0n;
+  const amount = Number(BigInt(balance.amountMinor) - through + previous);
+  if (!Number.isSafeInteger(amount)) throw new Error('Starting balance exceeds the supported range.');
+
+  // Include the statement date for statements with no activity through that day.
+  const earliest = transactions.reduce((day, row) =>
+    row.id !== opening?.id && row.date < day ? row.date : day, cutoff < balance.date ? cutoff : balance.date);
+  const date = new Date(Date.parse(earliest) - 86_400_000).toISOString().slice(0, 10);
+  const fields = { amount, date, imported_id: startingBalanceId, starting_balance_flag: true };
+  if (opening) {
+    if (opening.amount !== amount || opening.date !== date || opening.imported_id !== startingBalanceId || !opening.starting_balance_flag) {
+      await api.updateTransaction(opening.id, fields);
+    }
+  } else {
+    const income = offbudget ? [] : (await api.getCategories({ hidden: true }))
+      .filter(category => category.is_income);
+    const category = income.find(category => category.name.toLowerCase() === 'starting balances') ?? income[0];
+    await api.addTransactions(accountId, [{ ...fields, payee_name: 'Starting Balance', category: category?.id, cleared: true }]);
+  }
+}
+
+export function importIntoActual(api: ActualApi, config: ImportConfig, rows: ImportRow[]): Promise<ImportResult>;
+export function importIntoActual(api: StatementApi, config: ImportConfig, rows: ImportRow[], statement: StatementImport): Promise<ImportResult>;
+export async function importIntoActual(
+  api: ActualApi | StatementApi, config: ImportConfig, rows: ImportRow[], statement?: StatementImport,
+): Promise<ImportResult> {
   const { serverURL, password, dataDir, syncId, e2ePassword } = config;
   await api.init({ serverURL, password, dataDir, verbose: false });
   try {
@@ -88,16 +183,34 @@ export async function importIntoActual(api: ActualApi, config: ImportConfig, row
       ? account.id === config.accountId
       : account.id === config.accountReference || account.name === config.accountReference));
     if (matches.length !== 1) throw new Error('The alias must resolve to exactly one open account in the selected budget.');
-    const { id: accountId } = matches[0];
-    const result = await api.importTransactions(accountId, rows.map(row => ({
-      account: accountId,
-      amount: row.amountMinor,
-      date: row.postedDate,
-      imported_id: row.imported_id,
-      payee_name: row.payee,
-    })));
+    const { id: accountId, offbudget } = matches[0];
+    const statementApi = api as StatementApi;
+    if (statement && (!statement.skipTransactions && rows.length || statement.setStartingBalance)) {
+      // Actual's fuzzy matching can take a native opening transaction with
+      // no imported ID for a posted row of the same amount and nearby date.
+      const opening = startingTransaction(await accountTransactions(statementApi, accountId));
+      if (opening && !opening.imported_id) {
+        await statementApi.updateTransaction(opening.id, { imported_id: startingBalanceId });
+      }
+    }
+    const result = statement?.skipTransactions ? { added: [], updated: [], errors: [] } :
+      await api.importTransactions(accountId, rows.map(row => ({
+        account: accountId,
+        amount: row.amountMinor,
+        date: row.postedDate,
+        imported_id: row.imported_id,
+        payee_name: row.payee,
+      })));
     if (result.errors.length) throw new Error('Actual rejected the import.');
+    if (statement?.balance && statement.setStartingBalance) {
+      await setOpeningTransaction(statementApi, accountId, offbudget, statement.balance, statement.cutoff);
+    }
     await api.sync();
+    if (statement?.balance) {
+      const { date, amountMinor } = statement.balance;
+      const difference = await balanceThrough(statementApi, accountId, date) - BigInt(amountMinor);
+      return { added: result.added.length, updated: result.updated.length, balanceCheck: { date, difference } };
+    }
     return { added: result.added.length, updated: result.updated.length };
   } finally {
     await api.shutdown();

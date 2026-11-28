@@ -53,6 +53,13 @@ case "$1 $2" in
         [[ " $* " == *'bgfin-job:real -k 10s 10m node dist/src/inbox-cli.js --qfx-only '* ]]
         [[ " $* " == *' --env ACTUAL_SERVER_PASSWORD '* && " $* " != *'FAKE_PRIVATE'* ]]
         [[ $ACTUAL_SERVER_PASSWORD == 'FAKE_PRIVATE=$(touch INJECTION)' ]]
+        if [[ -n ${TEST_BALANCE_LINES-} ]]; then
+            [[ ${@: -2} == '--set-starting-balance chase-checking' ]]
+            printf '%s\n' 'chase-checking: balance check: off by -123.45 as of 2026-01-02' \
+                'chase-checking: to rebase, use --set-starting-balance chase-checking with a fresh QFX or OFX.' \
+                'chase-card: balance check: matches as of 2026-01-02' \
+                'chase-card: balance check: off by -456.78 as of 2026-01-02 private trailing text'
+        fi
         printf '%s\n' 'synthetic: 1 files processed (0 duplicates), 2 added, 0 updated, 0 skipped, latest posted: 2026-01-01, next export from: 2025-12-29' \
             'synthetic: account is stale.' 'FAKE_PRIVATE raw diagnostic'
         exit "${TEST_JOB_STATUS:-0}" ;;
@@ -138,6 +145,17 @@ sed -i '/chase-card/s/checking-id/card-id/' "$accounts"
     refuse 'Import failed (exit 9)' env TEST_JOB_STATUS=9 "$ops_real/import.sh"
 )
 printf 'PASS literal settings and aggregate import output\n'
+
+refuse 'Unknown account alias for --set-starting-balance' "$ops_real/import.sh" --set-starting-balance unknown
+refuse 'Usage: import.sh' "$ops_real/import.sh" --set-starting-balance
+output=$(TEST_BALANCE_LINES=1 "$ops_real/import.sh" --set-starting-balance chase-checking)
+[[ $output == *'chase-checking: balance check: mismatch as of 2026-01-02'* ]]
+[[ $output == *'chase-checking: to rebase, use --set-starting-balance chase-checking with a fresh QFX.'* ]]
+[[ $output == *'chase-card: balance check: matches as of 2026-01-02'* ]]
+[[ $output != *'-123.45'* && $output != *'-456.78'* ]]
+output=$(TEST_BALANCE_LINES=1 script -q -e -c "'$ops_real/import.sh' --set-starting-balance chase-checking" /dev/null)
+[[ $output == *'chase-checking: balance check: off by -123.45 as of 2026-01-02'* && $output != *'-456.78'* ]]
+printf 'PASS alias-scoped flag and terminal-only signed balance differences\n'
 
 printf '%s\n' 'FAKE_PRIVATE body' > "$BGFIN_REAL_ROOT/intake/inbox/FAKE_PRIVATE.qfx"
 printf '%s\n' 'FAKE_PRIVATE quarantine reason' > "$BGFIN_REAL_ROOT/intake/quarantine/FAKE_PRIVATE.reason.txt"

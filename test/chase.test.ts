@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { validateParserResult } from '../src/importers/actual-file-parser.js';
-import { chase, matchStatement, normalizeCsv, normalizeOfx, ofxAccountSuffix, parseAccounts, routeAccount, toCents } from '../src/importers/chase.js';
+import { chase, matchStatement, normalizeCsv, normalizeOfx, ofxAccountSuffix, parseAccounts, readStatementBalance, routeAccount, toCents } from '../src/importers/chase.js';
 
 const routes = parseAccounts(JSON.stringify({
   checking: { actualAccount: 'Synthetic Checking', last4: '1234', filename: 'checking-*.csv' },
@@ -18,6 +18,37 @@ test('converts decimal strings into exact cents', () => {
   assert.equal(toCents('-0.10'), -10);
   assert.throws(() => toCents('0.001'), /invalid amount/);
   assert.throws(() => toCents('90071992547409.92'), /supported range/);
+});
+
+test('reads only the ledger balance and applies Chase card debt signs', async () => {
+  const checking = await readFile(fixture('checking-synthetic.qfx'), 'utf8');
+  const card = await readFile(fixture('card-synthetic.qfx'), 'utf8');
+  assert.deepEqual(readStatementBalance(Buffer.from(checking), '.qfx'), { date: '2026-01-02', amountMinor: 5000 });
+  assert.deepEqual(readStatementBalance(Buffer.from(card), '.qfx'), { date: '2026-01-02', amountMinor: -2005 });
+  assert.deepEqual(readStatementBalance(Buffer.from(card.replace('>20.05<', '>-20.05<')), '.ofx'),
+    { date: '2026-01-02', amountMinor: -2005 });
+  assert.deepEqual(readStatementBalance(Buffer.from(checking.replace('50.00<DTASOF>20260102',
+    '-0,0100</BALAMT><DTASOF>20260102</DTASOF>')), '.ofx'), { date: '2026-01-02', amountMinor: -1 });
+  assert.equal(readStatementBalance(Buffer.from(checking), '.csv'), undefined);
+});
+
+test('treats absent, nested, duplicate, malformed and inexact ledger balances as absent', async () => {
+  const text = await readFile(fixture('checking-synthetic.qfx'), 'utf8');
+  const ledger = text.match(/<LEDGERBAL>[^]*?<\/LEDGERBAL>/)![0];
+  for (const input of [
+    text.replace(ledger, ''),
+    text.replace(ledger, '').replace('</STMTTRN>', `${ledger}</STMTTRN>`),
+    text.replace(ledger, ledger + ledger),
+    text.replace('<DTASOF>20260102</LEDGERBAL>', '</LEDGERBAL>'),
+    text.replace('DTASOF>20260102</LEDGERBAL>', 'DTASOF>20260230</LEDGERBAL>'),
+    text.replace('DTASOF>20260102</LEDGERBAL>', 'DTASOF>20260102246000[99]</LEDGERBAL>'),
+    text.replace('BALAMT>50.00', 'BALAMT>50.001'),
+    text.replace('BALAMT>50.00', 'BALAMT>90071992547409.92'),
+    text.replace('BALAMT>50.00', 'BALAMT>literal'),
+    text.replace('</LEDGERBAL>', ''),
+  ]) {
+    assert.equal(readStatementBalance(Buffer.from(input), '.qfx'), undefined);
+  }
 });
 
 test('matches basenames, account suffixes and explicit aliases; fails closed on conflicts', () => {
@@ -121,5 +152,22 @@ test('rejects malformed date and amount tokens even if Actual normalizes them', 
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('imports posted rows from OFX with missing or malformed ledger fields', native, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'chase-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, 'checking.qfx');
+  const contents = await readFile(fixture('checking-synthetic.qfx'), 'utf8');
+  for (const input of [
+    contents.replace(/<LEDGERBAL>[^]*?<\/LEDGERBAL>/, ''),
+    contents.replace('<BALAMT>50.00', '<BALAMT>'),
+    contents.replace('</LEDGERBAL>', ''),
+  ]) {
+    await writeFile(path, input);
+    const statement = await chase.parse(path, { routes });
+    assert.equal(statement.balance, undefined);
+    assert.equal(statement.rows.length, 1);
   }
 });

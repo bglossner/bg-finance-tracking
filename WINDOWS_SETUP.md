@@ -149,7 +149,7 @@ If WSL uses mirrored networking, IPv4 loopback is supported and the NAT-only `lo
 
 ## 5. Create the budget and import the first exports
 
-1. In the Windows browser, set the Actual server password, create the budget, and add separate Chase checking and credit card accounts. Choose the first date to import. Enter each account's posted balance immediately before that date, entering card debt as a negative balance. Date each opening transaction the day before the first export date. Use that first export date as the configured cutoff. [Actual reconciliation](https://actualbudget.org/docs/accounts/reconciliation/)
+1. In the Windows browser, set the Actual server password, create the budget, and add separate Chase checking and credit card accounts with zero opening balances. Use the first date to import as the configured cutoff. The first successful QFX import with no checkpoint and a valid `LEDGERBAL` sets the starting balance automatically. [Actual reconciliation](https://actualbudget.org/docs/accounts/reconciliation/)
 2. In Actual, open **Settings > Advanced** and copy the **Sync ID**. Open each account and take its account ID from the URL. Use a different ID for each alias. [Starting a budget](https://actualbudget.org/docs/getting-started/starting-fresh/) · [Actual account setup](https://actualbudget.org/docs/accounts/) · [Actual settings](https://actualbudget.org/docs/settings/#advanced-settings)
 3. In Ubuntu, edit the two private templates. In `actual.env`, fill in `ACTUAL_SERVER_PASSWORD`, `ACTUAL_BUDGET_SYNC_ID`, and `BGFIN_HISTORY_CUTOFF` (`YYYY-MM-DD`). Keep `ACTUAL_SERVER_URL=http://actual-server:5006` and `BGFIN_DOCKER_NETWORK=bgfin-real_default`. For an encrypted budget, add `ACTUAL_E2E_PASSWORD`. Enter one literal `KEY=value` per line, with the value immediately after `=` and without shell quotes. In `accounts.json`, replace each `actualAccount` placeholder, set each `last4` to the real four-digit suffix, and replace `XXXX` in each filename glob to match the corresponding Chase QFX basename.
 
@@ -161,7 +161,22 @@ If WSL uses mirrored networking, IPv4 loopback is supported and the NAT-only `lo
    jq -e 'type == "object"' "$BGFIN_REAL_ROOT/config/accounts.json" >/dev/null
    ```
 
-4. Download and drop each first QFX using the weekly routine below, starting from the cutoff date, inclusive. Optionally preview a single QFX offline using the [README's single-file preview](README.md#real-budget-setup-glossner) command inside Ubuntu. `ops/real/import.sh` performs a real import. Compare each resulting Actual balance with Chase on the same date and review pending or quarantined files before advancing an export window.
+4. Download and drop each first QFX using the weekly routine below, starting from the cutoff date, inclusive. Optionally preview a single QFX offline inside Ubuntu. Run `ops/real/import.sh` and look for `balance check: matches as of` for each alias. Review pending or quarantined files before advancing the export window. [Single-file preview](README.md#real-budget-setup-glossner)
+
+5. To correct an existing account, open the updated checkout in Ubuntu and
+   rebuild the import image. Download a fresh QFX for the intended account and
+   drop it using section 6. Wait for the configured minimum file age, then
+   run the reset for the alias. Repeat for the card with `chase-card`.
+
+   ```bash
+   cd "$HOME/github/bg-finance-tracking"
+   export BGFIN_REAL_ROOT="$HOME/.local/share/bg-finance-tracking/real"
+   docker --host unix:///var/run/docker.sock build --tag bgfin-job:real -f ops/docker/Dockerfile.job .
+   ops/real/import.sh --set-starting-balance chase-checking
+   ```
+
+   Expect `balance check: matches as of <date>`. An ambiguous starting balance
+   requires reviewing the opening transactions in Actual before retrying.
 
 ## 6. Drop Chase exports weekly
 
@@ -201,7 +216,7 @@ If WSL uses mirrored networking, IPv4 loopback is supported and the NAT-only `lo
    )
    ```
 
-4. Wait at least ten seconds since the last copy, or longer if `BGFIN_MIN_FILE_AGE_SECONDS` is higher. Let the next scheduled run pick it up, or run the following from Ubuntu. The import wrapper prints aggregate counts. `status.sh` counts regular files in the inbox and quarantine, including `.reason.txt` files. Inspect quarantine locally, and retry sync failures after checking the server and pending input. Keep the original download until the import and balance check succeed. Reconcile transfers and card payments across both accounts in Actual. [Actual reconciliation](https://actualbudget.org/docs/accounts/reconciliation/) · [Actual transfers](https://actualbudget.org/docs/transactions/transfers/)
+4. Wait at least ten seconds since the last copy, or longer if `BGFIN_MIN_FILE_AGE_SECONDS` is higher. Let the next scheduled run pick it up, or run the following from Ubuntu. The import wrapper prints aggregate counts and each file's balance check. An interactive terminal shows the signed difference on a mismatch. The scheduled log records the status and date. A mismatch leaves the opening amount as it was and the import still succeeds. `status.sh` counts regular files in the inbox and quarantine, including `.reason.txt` files. Inspect quarantine locally, and retry sync failures after checking the server and pending input. Keep the original download until the import and balance check succeed. Reconcile transfers and card payments across both accounts in Actual. [Actual reconciliation](https://actualbudget.org/docs/accounts/reconciliation/) · [Actual transfers](https://actualbudget.org/docs/transactions/transfers/)
 
    ```bash
    cd "$HOME/github/bg-finance-tracking"

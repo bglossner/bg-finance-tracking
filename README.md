@@ -71,10 +71,15 @@ docker compose -p bgfin --env-file ops/docker/.env -f ops/docker/compose.yaml ru
   job import --file /input/checking-download.qfx --dry-run
 ```
 
-Remove `--dry-run` to sync the import. A dry run prints the row count and
-inclusive posted-date range and runs the parser without opening a budget.
-Set `BGFIN_ACCOUNTS_FILE` to use an alternate config path. Host `npm test`
-skips the tests that load Actual's native binding.
+A dry run prints the row count and inclusive posted-date range without opening
+a budget. For a live single-file import, remove `--dry-run` and supply the
+connection settings, `BGFIN_DATA_DIR` and `BGFIN_HISTORY_CUTOFF` described below.
+In Docker, bind the same intake directory used by the drop-folder importer and
+pass its path in the container as `BGFIN_DATA_DIR`. Both commands share the
+same account checkpoints. To rebase with a single file, use
+`import --file PATH --set-starting-balance ALIAS`. Set `BGFIN_ACCOUNTS_FILE` to
+use an alternate config path. Host `npm test` skips tests that load Actual's
+native binding.
 
 Chase checking and card exports supply signed amounts. Purchases and checking
 debits stay negative, while payments into the card and checking credits stay
@@ -85,6 +90,15 @@ export contains only some of a day's indistinguishable rows, the importer cannot
 tell which occurrences were exported. Keep full days in overlapping CSV export
 windows. Keep CSV and QFX/OFX date ranges disjoint for each account because their
 identifiers differ.
+
+QFX/OFX balance checks use `LEDGERBAL` in the bank or card response. Chase deposit
+balances keep their sign. Chase card debt can arrive with either sign, so the
+importer uses negative cents for either. The scrubbed Chase card sample shows
+a positive ledger amount, negative purchases and positive payments. The OFX
+specification signs ledger balances by their effect on the user's net worth
+and gives negative card debt as its example. A positive card ledger value is
+treated as debt, including in cases where the source uses it to mean an
+overpayment. [OFX Banking Specification, §3.2.9.2](https://financialdataexchange.org/wp-content/uploads/2025/12/OFX-Banking-Specification-v2.3.pdf)
 
 ## Drop-folder imports
 
@@ -97,7 +111,28 @@ numbers and other private details because aliases appear in the summary.
 
 1. Run the importer once to create the directories and print the first `next export from` date.
 2. In Chase's Activity list, download QFX for each account from its printed date, inclusive. Drop or `scp` the finished file into `inbox/`. For an explicit route, create `inbox/<alias>/` with mode `700` and drop it there. When copying a file into the inbox, use a `.part` name and rename it after the copy completes.
-3. Run the importer again. Read each account's summary for counts and the next export date. Check `quarantine/` and its `.reason.txt` files for rejected inputs. Files that fail to sync stay in the inbox for retry.
+3. Run the importer again. Read each account's summary for counts and the next export date, and check the balance result. Check `quarantine/` and its `.reason.txt` files for rejected inputs. Files that fail to sync stay in the inbox for retry.
+
+The first successful import for an alias with no checkpoint sets its starting
+balance if the file has a valid `LEDGERBAL`. Actual sums transactions dated
+through `DTASOF` inclusively, using the calendar date written in the statement.
+The importer sets the opening amount to the ledger balance minus all other
+account activity through that date. It dates the opening transaction one day
+before the earliest of the account's activity, the history cutoff and the
+statement date. It reuses Actual's flagged opening transaction when present or
+creates one named **Starting Balance** with a fixed imported ID scoped to the
+account. Multiple candidates or an opening split or transfer require manual
+resolution.
+
+Later imports check the balance without resetting the opening amount. A
+positive difference means Actual is higher than the signed Chase balance.
+Mismatches still complete the import successfully. To reset an opening amount,
+drop a fresh QFX or OFX and run `npm run import -- --set-starting-balance ALIAS`
+or pass the same flag to `ops/real/import.sh` for real QFX intake. When several
+files are ready for the selected alias, the reset uses the most recent ledger
+date in that run. An identical drop still checks the balance and can be used to
+retry an explicit reset. CSV and statements with missing or invalid
+`LEDGERBAL` print a skip note. `AVAILBAL` is ignored.
 
 On Amazon Linux 2, build the job image as in the Chase statements section and
 run the command inside it. For the existing local Actual stack, use an ignored
@@ -141,6 +176,7 @@ latest posted year in each file and marks exact duplicates in the archived
 name. For an empty statement, it uses the current UTC year. `quarantine/`
 holds rejected inputs and their reasons. `state/accounts.json` holds each
 account's latest successful posted date, successful import time and file hashes.
+It stores the last balance check's date and `ok` or `mismatch` status.
 If the state file is corrupt, the importer keeps a copy in `state/` and uses the
 configured cutoff until successful imports rebuild the checkpoints. Actual uses
 transaction IDs to deduplicate overlapping exports and retries.
@@ -230,9 +266,9 @@ For setup on a Windows computer, follow the [Windows 11 and WSL 2 guide](WINDOWS
 2. On the laptop, run `ssh -L 127.0.0.1:5007:127.0.0.1:5007 <cloud desktop host>` and open
    [Actual Budget](http://localhost:5007).
 3. Set the server password and create the budget.
-4. Create the Chase checking and credit card accounts. Enter their balances
-   immediately before the first date covered by the QFX imports as opening
-   balances. Date each starting balance the day before the first import date.
+4. Create the Chase checking and credit card accounts with zero opening balances.
+   Their first QFX imports set the starting balances automatically when
+   `LEDGERBAL` is present and valid.
 5. Copy the budget Sync ID from **Settings > Advanced** and enter it and the
    server password in `$BGFIN_REAL_ROOT/config/actual.env`. Set
    `BGFIN_HISTORY_CUTOFF` to the first export date in `YYYY-MM-DD` format.
@@ -262,7 +298,16 @@ For setup on a Windows computer, follow the [Windows 11 and WSL 2 guide](WINDOWS
    When ready, run `ops/real/import.sh` on the cloud desktop.
    `ops/real/status.sh` reports the server and counts regular files in the
    inbox and quarantine, including quarantine reason files.
-9. Compare each Actual account balance against Chase for the same date.
+9. Look for `balance check: matches as of` for each account. A local interactive
+   run shows the signed difference on a mismatch. Scheduled and redirected runs
+   show the status and date. To correct an account with an existing checkpoint,
+   rebuild the job image from the updated checkout, drop a fresh QFX for that
+   account, then run the reset once for its alias.
+
+   ```sh
+   docker --host unix:///var/run/docker.sock build --tag bgfin-job:real -f ops/docker/Dockerfile.job .
+   ops/real/import.sh --set-starting-balance chase-checking
+   ```
 10. Optionally copy the [scheduling units](ops/schedule) as
     `bgfin-real-import.service` and `bgfin-real-import.timer`. In the copied
     service, use `ExecStart=/bin/bash -p /absolute/checkout/ops/real/import.sh`

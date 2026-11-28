@@ -17,6 +17,8 @@ services:
           create_host_path: false
   job:
     profiles: [import]
+    logging:
+      driver: none
     build:
       context: ../..
       dockerfile: ops/docker/Dockerfile.job

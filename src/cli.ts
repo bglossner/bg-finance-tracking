@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
-import { AmbiguousStartingBalance, importIntoActual, parseImportRows, readImportConfig } from './actual.js';
+import { StartingBalanceError, importIntoActual, parseImportRows, readImportConfig } from './actual.js';
 import { runSingleStatement } from './inbox.js';
 import { quietActual, statementSettings } from './statement-config.js';
 
@@ -39,10 +39,12 @@ async function main() {
       const report = console.log.bind(console);
       const warn = console.error.bind(console);
       try {
-        const { added, updated } = await quietActual(() => runSingleStatement({ ...options, report, warn, setStartingBalance }, statement));
+        const { added, updated } = await quietActual(() => runSingleStatement({
+          ...options, report, warn, setStartingBalance, showBalanceDifference: process.stdout.isTTY,
+        }, statement));
         console.log(JSON.stringify({ added, updated }));
       } catch (error) {
-        console.error(error instanceof AmbiguousStartingBalance ? error.message :
+        console.error(error instanceof StartingBalanceError ? error.message :
           'Actual import failed. Check the server, budget configuration and account mapping.');
         process.exitCode = 1;
       }

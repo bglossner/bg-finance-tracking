@@ -52,16 +52,16 @@ write_log() (
             mv -fT -- "$log" "$log.1" || fail 'Could not rotate import log.'
         fi
     fi
-    printf '%s files=%s duplicates=%s added=%s updated=%s skipped=%s stale=%s busy=%s failures=%s\n' \
+    printf '%s files=%s duplicates=%s added=%s updated=%s skipped=%s stale=%s balance_mismatches=%s busy=%s failures=%s\n' \
         "$(date -u +%FT%TZ)" "$@" >> "$log"
 )
 
-files=0 duplicates=0 added=0 updated=0 skipped=0 stale=0 busy=0
+files=0 duplicates=0 added=0 updated=0 skipped=0 stale=0 balance_mismatches=0 busy=0
 record_run() {
     local status=$? failures=0
     trap - EXIT
     if (( status != 0 )); then failures=1; fi
-    write_log "$files" "$duplicates" "$added" "$updated" "$skipped" "$stale" "$busy" "$failures" || exit 1
+    write_log "$files" "$duplicates" "$added" "$updated" "$skipped" "$stale" "$balance_mismatches" "$busy" "$failures" || exit 1
     exit "$status"
 }
 trap record_run EXIT
@@ -121,7 +121,7 @@ if [[ ! -f $accounts_file || $accounts_file == *,* ]]; then
     fail 'Expected an accounts mapping file.'
 fi
 
-# Only the documented intake summary and stale warning contribute to the log.
+# Only counts from the documented intake output contribute to the log.
 # Keep Docker and importer diagnostics out of persistent logs and the journal.
 run_container() (
     docker_env=()
@@ -142,7 +142,8 @@ counts=$(run_container 2>&1 |
         files += $2; duplicates += substr($5, 2); added += $7; updated += $9; skipped += $11
     }
     /^[A-Za-z0-9_-]+: account is stale\.$/ { stale++ }
-    END { printf "%.0f %.0f %.0f %.0f %.0f %.0f\n", files, duplicates, added, updated, skipped, stale }') || status=$?
-read -r files duplicates added updated skipped stale <<< "$counts"
+    /^[A-Za-z0-9_-]+: balance check: mismatch as of [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ { mismatches++ }
+    END { printf "%.0f %.0f %.0f %.0f %.0f %.0f %.0f\n", files, duplicates, added, updated, skipped, stale, mismatches }') || status=$?
+read -r files duplicates added updated skipped stale balance_mismatches <<< "$counts"
 if (( status != 0 )); then printf 'Scheduled import failed (exit %d).\n' "$status" >&2; fi
 exit "$status"

@@ -55,6 +55,7 @@ case "$1 $2" in
         [[ $ACTUAL_SERVER_PASSWORD == 'FAKE_PRIVATE=$(touch INJECTION)' ]]
         if [[ -n ${TEST_BALANCE_LINES-} ]]; then
             [[ ${@: -2} == '--set-starting-balance chase-checking' ]]
+            if [[ -n ${TEST_REQUIRE_TTY-} ]]; then [[ " $* " == *' --tty '* ]]; fi
             printf '%s\n' 'chase-checking: balance check: off by -123.45 as of 2026-01-02' \
                 'chase-checking: to rebase, use --set-starting-balance chase-checking with a fresh QFX or OFX.' \
                 'chase-card: balance check: matches as of 2026-01-02' \
@@ -153,7 +154,7 @@ output=$(TEST_BALANCE_LINES=1 "$ops_real/import.sh" --set-starting-balance chase
 [[ $output == *'chase-checking: to rebase, use --set-starting-balance chase-checking with a fresh QFX.'* ]]
 [[ $output == *'chase-card: balance check: matches as of 2026-01-02'* ]]
 [[ $output != *'-123.45'* && $output != *'-456.78'* ]]
-output=$(TEST_BALANCE_LINES=1 script -q -e -c "'$ops_real/import.sh' --set-starting-balance chase-checking" /dev/null)
+output=$(TEST_BALANCE_LINES=1 TEST_REQUIRE_TTY=1 script -q -e -c "'$ops_real/import.sh' --set-starting-balance chase-checking" /dev/null)
 [[ $output == *'chase-checking: balance check: off by -123.45 as of 2026-01-02'* && $output != *'-456.78'* ]]
 printf 'PASS alias-scoped flag and terminal-only signed balance differences\n'
 

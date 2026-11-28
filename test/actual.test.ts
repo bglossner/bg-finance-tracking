@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -26,9 +27,10 @@ test('validates normalized rows before Actual starts', () => {
 
 test('reconciles opening transactions and inclusive balances in Actual', {
   skip: process.env.BGFIN_CONTAINER_TESTS !== '1' && 'Requires the Docker job image',
-}, async t => {
+}, async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'bgfin-actual-test-'));
-  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  // The offline engine can still be flushing its metadata after shutdown.
+  process.once('exit', () => rmSync(dataDir, { recursive: true, force: true }));
   const routes = parseAccounts(JSON.stringify({
     checking: { actualAccount: 'Test Checking', last4: '1234', filename: 'checking-*.qfx' },
     card: { actualAccount: 'Test Card', last4: '5678', filename: 'card-*.qfx' },
@@ -50,11 +52,18 @@ test('reconciles opening transactions and inclusive balances in Actual', {
     // Same date and amount as the imported debit, so fuzzy matching would absorb it.
     await api.updateTransaction(nativeOpening.id, { date: '2026-01-01' });
     await api.addTransactions(checkingId, [{ date: '2026-01-03', amount: 8000, payee_name: 'Future' }]);
-    const importFile = (statement: typeof checking, setStartingBalance: boolean, skipTransactions = false) =>
+    const importFile = (statement: typeof checking, setStartingBalance: boolean, skipTransactions = false, cutoff = '2026-01-01') =>
       importIntoActual(inspectingApi, readStatementImportConfig(env, statement.account), statement.rows, {
-        balance: statement.balance, cutoff: '2026-01-01', setStartingBalance, skipTransactions,
+        balance: statement.balance, cutoff, setStartingBalance, skipTransactions,
       });
 
+    const startingPayee = (await api.getPayees()).find(payee => payee.name === 'Starting Balance')!;
+    await api.createRule({
+      stage: 'default', conditionsOp: 'and', conditions: [{ field: 'payee', op: 'is', value: startingPayee.id }],
+      actions: [{ op: 'set-split-amount', value: 100, options: { splitIndex: 1, method: 'fixed-amount' } }],
+    });
+    await assert.rejects(importFile(checking, true, false, '1995-01-01'), /supports opening dates/);
+    assert.equal((await getRows(checkingId)).length, 1); // Only the previously seeded future row.
     assert.deepEqual(await importFile(checking, true), {
       added: 1, updated: 0, balanceCheck: { date: '2026-01-02', difference: 0n },
     });
@@ -62,6 +71,10 @@ test('reconciles opening transactions and inclusive balances in Actual', {
     assert.equal(depositOpening.amount, 5010);
     assert.equal(depositOpening.date, '2025-12-31');
     assert.equal(depositOpening.imported_id, 'bgfin:starting-balance');
+    assert.equal(depositOpening.payee, startingPayee.id);
+    assert.ok(!depositOpening.is_parent);
+    assert.equal(depositOpening.category, (await api.getCategories()).find(category => category.name === 'Starting Balances')?.id);
+    assert.ok(depositOpening.category);
 
     assert.deepEqual(await importFile(card, true), {
       added: 2, updated: 0, balanceCheck: { date: '2026-01-02', difference: 0n },

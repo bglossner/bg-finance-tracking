@@ -62,6 +62,7 @@ check_server_data
 
 run_container() (
     docker_env=()
+    if [[ $local_balances == 1 ]]; then docker_env+=(--tty); fi
     for key in "${!settings[@]}"; do
         [[ $key != BGFIN_DOCKER_NETWORK ]] || continue
         export "$key=${settings[$key]}"
@@ -81,6 +82,7 @@ status=0
 local_balances=0
 if [[ -t 1 ]]; then local_balances=1; fi
 output=$(run_container "$@" 2>&1 | LC_ALL=C awk -v local_balances="$local_balances" '
+    { sub(/\r$/, "") }
     /^[A-Za-z0-9_-]+: [0-9]+ files processed \([0-9]+ duplicates\), [0-9]+ added, [0-9]+ updated, [0-9]+ skipped, latest posted: / {
         files += $2; duplicates += substr($5, 2); added += $7; updated += $9; skipped += $11
     }
@@ -89,9 +91,10 @@ output=$(run_container "$@" 2>&1 | LC_ALL=C awk -v local_balances="$local_balanc
         if (local_balances) print
         else print $1, "balance check: mismatch as of", $9
     }
-    /^[A-Za-z0-9_-]+: balance check: matches as of [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ ||
+    /^[A-Za-z0-9_-]+: balance check: (matches|mismatch) as of [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ ||
     /^[A-Za-z0-9_-]+: balance check: skipped \(no valid LEDGERBAL\)\.$/ ||
     /^[A-Za-z0-9_-]+: Starting balance is ambiguous\. Keep one standalone opening transaction before retrying\.$/ ||
+    /^[A-Za-z0-9_-]+: Actual supports opening dates from 1995-01-01 onward\.$/ ||
     /^[A-Za-z0-9_-]+: starting balance was not set\. Drop a completed QFX or OFX with valid LEDGERBAL and retry\.$/ { print }
     /^[A-Za-z0-9_-]+: to rebase, use --set-starting-balance [A-Za-z0-9_-]+ with a fresh QFX or OFX\.$/ {
         if ($1 == $6 ":") print $1, "to rebase, use --set-starting-balance", $6, "with a fresh QFX."

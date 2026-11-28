@@ -24,7 +24,7 @@ async function setup(t: TestContext) {
   const calls: string[] = [];
   const options: Parameters<typeof runInbox>[0] = {
     dataRoot, repository: process.cwd(), routes, cutoff: '2025-06-01', budgetIdentity: 'synthetic-budget', minimumAgeSeconds: 10, staleDays: 10, now,
-    report: message => reports.push(message), warn: message => warnings.push(message),
+    report: message => reports.push(message), warn: message => warnings.push(message), showBalanceDifference: true,
     async importRows(account) { calls.push(account); return { added: 1, updated: 0 }; },
     async parseRows(contents) {
       const postedDate = /<DTPOSTED>(\d{4})(\d{2})(\d{2})/.exec(contents.toString())?.slice(1).join('-') ?? '2026-01-02';

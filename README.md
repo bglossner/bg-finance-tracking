@@ -122,7 +122,7 @@ before the earliest of the account's activity, the history cutoff and the
 statement date. It reuses Actual's flagged opening transaction when present or
 creates one named **Starting Balance** with a fixed imported ID scoped to the
 account. Multiple candidates or an opening split or transfer require manual
-resolution.
+resolution. Actual supports opening dates from 1995-01-01 onward.
 
 Later imports check the balance without resetting the opening amount. A
 positive difference means Actual is higher than the signed Chase balance.
@@ -143,7 +143,7 @@ should be `http://actual-server:5006` on the stack's Docker network):
 export BGFIN_DATA_DIR=/absolute/path/to/private-import-data
 export BGFIN_HISTORY_CUTOFF=2025-01-01
 mkdir -m 700 "$BGFIN_DATA_DIR"
-docker run --rm --network bgfin_default --entrypoint npm \
+docker run --rm --tty --log-driver none --network bgfin_default --entrypoint npm \
   --user "$(id -u):$(id -g)" --env-file /absolute/path/to/private-actual.env \
   --env BGFIN_DATA_DIR=/intake --env BGFIN_HISTORY_CUTOFF \
   --env BGFIN_ACCOUNTS_FILE=/config/accounts.json \
@@ -227,7 +227,7 @@ skips missed triggers. On return, run the wrapper once with the same paths to
 catch up. Install a single scheduler.
 
 Check `logs/import.log` under the intake root for UTC run timestamps and
-aggregate counts. It rotates at 64 KiB and keeps one previous file. A nonzero
+aggregate counts, including `balance_mismatches`. It rotates at 64 KiB and keeps one previous file. A nonzero
 `stale` count means one or more accounts lack a successful posted date or are
 older than `BGFIN_STALE_DAYS`. The manual intake command prints the affected
 aliases and next export dates. A nonzero `failures` count marks a failed job.

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants, type Stats } from 'node:fs';
 import { lstat, mkdtemp, open, readdir, realpath, rename, rmdir, stat, unlink } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
-import { AmbiguousStartingBalance, type ImportResult, type ImportRow, type StatementBalance, type StatementImport } from './actual.js';
+import { StartingBalanceError, type ImportResult, type ImportRow, type StatementBalance, type StatementImport } from './actual.js';
 import { InvalidStatement } from './importers/actual-file-parser.js';
 import { matchStatement, parseAccounts, parseStatement, readStatementBalance } from './importers/chase.js';
 import { nextExportWindow } from './state/export-window.js';
@@ -20,6 +20,7 @@ interface ImportOptions {
   now?: Date;
   report: (message: string) => void;
   warn: (message: string) => void;
+  showBalanceDifference?: boolean;
   importRows: (account: string, rows: ImportRow[], statement: StatementImport) => Promise<ImportResult>;
   setStartingBalance?: string;
 }
@@ -265,7 +266,8 @@ function reportBalance(options: ImportOptions, job: StatementJob, result: Import
   const check = result.balanceCheck;
   if (check?.difference === 0n) options.report(`${alias}: balance check: matches as of ${check.date}`);
   else if (check) {
-    options.report(`${alias}: balance check: off by ${signedAmount(check.difference)} as of ${check.date}`);
+    const status = options.showBalanceDifference ? `off by ${signedAmount(check.difference)}` : 'mismatch';
+    options.report(`${alias}: balance check: ${status} as of ${check.date}`);
     options.report(`${alias}: to rebase, use --set-starting-balance ${alias} with a fresh QFX or OFX.`);
   } else {
     options.report(`${alias}: balance check: skipped (${extension === '.csv' ? 'CSV has no statement balance' : 'no valid LEDGERBAL'}).`);
@@ -391,7 +393,7 @@ export async function runInbox(options: Options): Promise<boolean> {
           await move(job, await destination(annualArchive, job, duplicate ? '-duplicate' : ''));
           files++;
         } catch (error) {
-          options.warn(`${alias}: ${error instanceof AmbiguousStartingBalance ? error.message :
+          options.warn(`${alias}: ${error instanceof StartingBalanceError ? error.message :
             'intake failed. Check the budget connection and data directories before retrying.'}`);
           success = false;
           break;

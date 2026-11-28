@@ -26,6 +26,7 @@ async function main() {
   const warn = console.error.bind(console);
   const complete = await quietActual(() => runInbox({
     ...options, report, warn, setStartingBalance: values['set-starting-balance'],
+    showBalanceDifference: process.stdout.isTTY,
     acceptedExtensions: values['qfx-only'] ? ['.qfx'] : undefined,
     minimumAgeSeconds: integerSetting('BGFIN_MIN_FILE_AGE_SECONDS', 10),
     staleDays: integerSetting('BGFIN_STALE_DAYS', 10),

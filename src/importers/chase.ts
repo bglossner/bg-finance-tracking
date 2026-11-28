@@ -77,7 +77,7 @@ function ofxStatement(contents: Buffer) {
   if (identifier && !last4) throw new Error('Invalid statement account identifier.');
   const response = (bank ?? card)!;
   const afterAccount = response.indices![1]![0] + account[0].length;
-  return { last4: last4 || undefined, card: Boolean(card), response: response[1], text, afterAccount };
+  return { last4: last4 || undefined, card: Boolean(card), response: response[1], text, afterAccount, end: response.indices![1]![1] };
 }
 
 export function ofxAccountSuffix(contents: Buffer): string | undefined {
@@ -126,9 +126,10 @@ function transactionParserInput(contents: Buffer): Buffer {
   const offset = ledgerOffset(statement);
   // Empty SGML balance leaves and missing aggregate closures can make
   // Actual's transaction-only parser reject otherwise readable posted rows.
-  const ledger = /^<LEDGERBAL\s*>(?:(?!<\/?LEDGERBAL|<AVAILBAL|<\/(?:CC)?STMTRS)[^])*?(?:<\/LEDGERBAL\s*>|(?=<AVAILBAL\s*>|<\/(?:CC)?STMTRS\s*>))/
-    .exec(statement.text.slice(offset));
-  const text = ledger ? statement.text.slice(0, offset) + statement.text.slice(offset + ledger[0].length) : statement.text;
+  const tail = statement.text.slice(offset, statement.end).replace(
+    /<LEDGERBAL\s*>(?:(?!<\/?LEDGERBAL|<AVAILBAL)[^])*?(?:<\/LEDGERBAL\s*>|(?=<LEDGERBAL\s*>|<AVAILBAL\s*>|$))/g, '',
+  );
+  const text = statement.text.slice(0, offset) + tail + statement.text.slice(statement.end);
   return Buffer.from(statement.last4 === undefined
     ? text.replace(/<ACCTID\s*>\s*(?:<\/ACCTID\s*>)?(?=\s*<)/g, '')
     : text, 'latin1');

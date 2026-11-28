@@ -164,6 +164,7 @@ test('imports posted rows from OFX with missing or malformed ledger fields', nat
     contents.replace(/<LEDGERBAL>[^]*?<\/LEDGERBAL>/, ''),
     contents.replace('<BALAMT>50.00', '<BALAMT>'),
     contents.replace('</LEDGERBAL>', ''),
+    contents.replace('</AVAILBAL>', '</AVAILBAL><LEDGERBAL><BALAMT><DTASOF>20260102</LEDGERBAL>'),
   ]) {
     await writeFile(path, input);
     const statement = await chase.parse(path, { routes });

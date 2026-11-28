@@ -99,11 +99,14 @@ test('migration ignores malformed dates and honors legacy coverage when writes f
   assert.equal(readOnly.getItem(legacyKey), '2025-01-02');
 });
 
-test('existing coverage can still be read if Web Locks is unavailable', async () => {
-  const storage = dateStorage([[legacyKey, '2025-01-02']]);
-  const memory = createDateMemory(chaseAdapter, () => storage, null);
-  assert.equal(await memory.read(suffix), '2025-01-02');
-  assert.equal(storage.getItem(currentKey), null);
+test('existing coverage can still be read if Web Locks is unavailable or rejected', async () => {
+  const rejectedLocks = { request: async () => { throw new Error('Lock denied'); } };
+  for (const locks of [null, rejectedLocks]) {
+    const storage = dateStorage([[legacyKey, '2025-01-02']]);
+    const memory = createDateMemory(chaseAdapter, () => storage, locks);
+    assert.equal(await memory.read(suffix), '2025-01-02');
+    assert.equal(storage.getItem(currentKey), null);
+  }
 });
 
 test('Chase refreshes its token against current accounts before building a download request', async () => {

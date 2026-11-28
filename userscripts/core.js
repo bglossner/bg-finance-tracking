@@ -201,13 +201,13 @@
   ) {
     const prefix = `${storagePrefix(id)}date.`;
 
-    function readCheckpoint(storage, key) {
+    function readCheckpoint(storage, key, migrate = false) {
       const current = storage.getItem(prefix + key);
       if (!legacyDatePrefix) return current;
       const legacy = storage.getItem(legacyDatePrefix + key);
       if (!validDate(legacy) || (validDate(current) && current >= legacy))
         return current;
-      if (locks) {
+      if (migrate) {
         try {
           storage.setItem(prefix + key, legacy);
         } catch {
@@ -218,12 +218,21 @@
     }
 
     async function read(key) {
-      const readDate = () => readCheckpoint(getStorage(), key);
-      try {
-        return locks ? await locks.request(prefix + key, readDate) : readDate();
-      } catch {
-        return null;
+      const readDate = (migrate) => {
+        try {
+          return readCheckpoint(getStorage(), key, migrate);
+        } catch {
+          return null;
+        }
+      };
+      if (locks) {
+        try {
+          return await locks.request(prefix + key, () => readDate(true));
+        } catch {
+          // Fall back to a read-only lookup if locking is denied.
+        }
       }
+      return readDate(false);
     }
 
     async function save(key, date) {
@@ -249,7 +258,6 @@
     } = adapter;
     const format = formats[0];
     const prefix = storagePrefix(id);
-    const dateMemory = createDateMemory(adapter);
 
     function onReadyPage() {
       return (
@@ -260,6 +268,7 @@
     }
 
     if (!onReadyPage()) return;
+    const dateMemory = createDateMemory(adapter);
 
     function isActive(visit) {
       return !visit.aborted && onReadyPage();
@@ -497,12 +506,14 @@
             for (const { row, from, to } of requests) {
               if (!isActive(visit)) break;
               if (!validRange(from, to) || to > today) {
+                row.confirmation = null;
                 row.status.textContent =
                   "Choose a valid date range ending today or earlier.";
                 continue;
               }
               if (index++ > 0) await delay();
               if (!isActive(visit)) break;
+              row.confirmation = null;
               row.status.textContent = `Requesting ${format}…`;
               row.status.textContent = await downloadOne(row, from, to, visit);
             }
@@ -540,6 +551,7 @@
         status,
         save,
         pendingEnd: null,
+        confirmation: null,
       };
       action.addEventListener("click", () => void run([row]));
       save.addEventListener("click", async () => {
@@ -547,11 +559,14 @@
         const end = row.pendingEnd;
         row.pendingEnd = null;
         save.hidden = true;
-        const saved = await dateMemory.save(account.key, end);
-        if (!busy && !row.pendingEnd)
-          status.textContent = saved
-            ? "Download date recorded."
-            : "Date storage is unavailable.";
+        const confirmation = dateMemory.save(account.key, end);
+        row.confirmation = confirmation;
+        const saved = await confirmation;
+        if (row.confirmation !== confirmation) return;
+        row.confirmation = null;
+        status.textContent = saved
+          ? "Download date recorded."
+          : "Date storage is unavailable.";
       });
       const article = element("article");
       article.append(element("h2", account.label), dates, action, save, status);

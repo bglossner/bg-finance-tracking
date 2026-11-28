@@ -36,11 +36,10 @@ async function main() {
       }
       const options = await statementSettings(process.env, routes);
       if (setStartingBalance !== undefined && !statement.balance) throw new Error('Supply a statement with valid LEDGERBAL for the selected alias.');
-      const report = console.log.bind(console);
       const warn = console.error.bind(console);
       try {
         const { added, updated } = await quietActual(() => runSingleStatement({
-          ...options, report, warn, setStartingBalance, showBalanceDifference: process.stdout.isTTY,
+          ...options, report: warn, warn, setStartingBalance, showBalanceDifference: process.stderr.isTTY,
         }, statement));
         console.log(JSON.stringify({ added, updated }));
       } catch (error) {

@@ -77,9 +77,10 @@ connection settings, `BGFIN_DATA_DIR` and `BGFIN_HISTORY_CUTOFF` described below
 In Docker, bind the same intake directory used by the drop-folder importer and
 pass its path in the container as `BGFIN_DATA_DIR`. Both commands share the
 same account checkpoints. To rebase with a single file, use
-`import --file PATH --set-starting-balance ALIAS`. Set `BGFIN_ACCOUNTS_FILE` to
-use an alternate config path. Host `npm test` skips tests that load Actual's
-native binding.
+`import --file PATH --set-starting-balance ALIAS`. The single-file command
+prints balance checks to stderr and JSON transaction counts to stdout. Set
+`BGFIN_ACCOUNTS_FILE` to use an alternate config path. Host `npm test` skips
+tests that load Actual's native binding.
 
 Chase checking and card exports supply signed amounts. Purchases and checking
 debits stay negative, while payments into the card and checking credits stay

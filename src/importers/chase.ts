@@ -127,7 +127,7 @@ function transactionParserInput(contents: Buffer): Buffer {
   // Empty SGML balance leaves and missing aggregate closures can make
   // Actual's transaction-only parser reject otherwise readable posted rows.
   const tail = statement.text.slice(offset, statement.end).replace(
-    /<LEDGERBAL\s*>(?:(?!<\/?LEDGERBAL|<AVAILBAL)[^])*?(?:<\/LEDGERBAL\s*>|(?=<LEDGERBAL\s*>|<AVAILBAL\s*>|$))/g, '',
+    /<LEDGERBAL\s*>(?:(?!<\/?LEDGERBAL\s*>|<AVAILBAL\s*>)[^])*?(?:<\/LEDGERBAL\s*>|(?=<LEDGERBAL\s*>|<AVAILBAL\s*>|$))/g, '',
   );
   const text = statement.text.slice(0, offset) + tail + statement.text.slice(statement.end);
   return Buffer.from(statement.last4 === undefined

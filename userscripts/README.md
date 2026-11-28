@@ -6,6 +6,8 @@
 2. Open **Tampermonkey → Create a new script**. Replace the editor contents with the entire [Chase QFX userscript](chase-qfx-download.user.js) and save with **Ctrl+S**. Check that the script is enabled. If Chrome or Edge shows an **Allow User Scripts** toggle for Tampermonkey under the extension's details, turn it on.
 3. Glossner signs in to Chase personally, completing any verification in the browser. Open or reload the signed-in accounts dashboard and select **Chase QFX** at the lower right. The script uses the existing page session and starts account lookup when glossner opens the panel.
 
+Chase `1.1.0` updates the existing Tampermonkey entry. For a manual installation, replace the source in that entry and save. See [Bank userscript adapters](ADAPTERS.md) for generation and the next-bank checklist.
+
 ## Download activity
 
 - Each row shows the account type and its last four digits. Set the **Start date** and **End date** for each account. On first use the panel starts 30 days ago. On a new dashboard load it starts three days before the most recent end date confirmed for that account. The end date defaults to today.
@@ -14,7 +16,7 @@
 - Select **Refresh** in the blue header to restart account lookup, fetch fresh session data, and rebuild the rows from their saved dates. Refresh clears edits and unconfirmed downloads from the panel. It is disabled during a download batch.
 - Files go to the browser’s normal download location, usually Windows **Downloads**, or the folder chosen in the browser prompt. Move only finished `.QFX` files into the private WSL importer inbox using the copy and rename steps in [Windows setup, section 6](../WINDOWS_SETUP.md#6-drop-chase-exports-weekly). The `Chase<last4>_Activity_<start>_<end>.QFX` names fit the Windows template’s `ChaseXXXX_Activity*.[qQ][fF][xX]` globs after setting each account’s last four digits in the private mapping.
 
-The script stores only end dates in Chase-origin browser local storage under keys derived from SHA-256 hashes of account IDs. Refresh or reload the dashboard to see updated defaults. The script requests a fresh session token from Chase for each download attempt and uses it in that request. Files are handed to the browser locally.
+The script stores only end dates in Chase-origin browser local storage under keys derived from SHA-256 hashes of account IDs. Version `1.1.0` carries the saved dates forward into the Chase adapter’s storage keys. Refresh or reload the dashboard to see updated defaults. The script requests a fresh session token from Chase for each download attempt and uses it in that request. Files are handed to the browser locally.
 
 ## Download messages
 

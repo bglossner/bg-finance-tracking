@@ -207,32 +207,46 @@
     return `bgfin.userscript.${id}.v1.`;
   }
 
-  function createDateMemory({ id, legacyDatePrefix }, getStorage = () => localStorage) {
+  function createDateMemory(
+    { id, legacyDatePrefix },
+    getStorage = () => localStorage,
+    locks = globalThis.navigator?.locks,
+  ) {
     const prefix = `${storagePrefix(id)}date.`;
 
-    function read(key) {
-      try {
-        const storage = getStorage();
-        const current = storage.getItem(prefix + key);
-        if (!legacyDatePrefix) return current;
-        const legacy = storage.getItem(legacyDatePrefix + key);
-        if (!validDate(legacy) || (validDate(current) && current >= legacy))
-          return current;
+    function readCheckpoint(storage, key) {
+      const current = storage.getItem(prefix + key);
+      if (!legacyDatePrefix) return current;
+      const legacy = storage.getItem(legacyDatePrefix + key);
+      if (!validDate(legacy) || (validDate(current) && current >= legacy))
+        return current;
+      if (locks) {
         try {
           storage.setItem(prefix + key, legacy);
         } catch {
           // Use the saved date even if storage is full.
         }
-        return legacy;
+      }
+      return legacy;
+    }
+
+    async function read(key) {
+      const readDate = () => readCheckpoint(getStorage(), key);
+      try {
+        return locks ? await locks.request(prefix + key, readDate) : readDate();
       } catch {
         return null;
       }
     }
 
-    function save(key, date) {
+    async function save(key, date) {
+      if (!locks) return false;
       try {
-        const prior = read(key);
-        if (!validDate(prior) || prior < date) getStorage().setItem(prefix + key, date);
+        await locks.request(prefix + key, () => {
+          const storage = getStorage();
+          const prior = readCheckpoint(storage, key);
+          if (!validDate(prior) || prior < date) storage.setItem(prefix + key, date);
+        });
         return true;
       } catch {
         return false;
@@ -517,8 +531,8 @@
       }
     }
 
-    function makeRow(account, today) {
-      const range = defaultRange(today, dateMemory.read(account.key));
+    async function makeRow(account, today) {
+      const range = defaultRange(today, await dateMemory.read(account.key));
       const from = dateField("Start date", range.from, today);
       const to = dateField("End date", range.to, today);
       const dates = element("div");
@@ -541,13 +555,16 @@
         pendingEnd: null,
       };
       action.addEventListener("click", () => void run([row]));
-      save.addEventListener("click", () => {
+      save.addEventListener("click", async () => {
         if (!onReadyPage() || !row.pendingEnd) return;
-        status.textContent = dateMemory.save(account.key, row.pendingEnd)
-          ? "Download date recorded."
-          : "Date storage is unavailable.";
+        const end = row.pendingEnd;
         row.pendingEnd = null;
         save.hidden = true;
+        const saved = await dateMemory.save(account.key, end);
+        if (!busy && !row.pendingEnd)
+          status.textContent = saved
+            ? "Download date recorded."
+            : "Date storage is unavailable.";
       });
       const article = element("article");
       article.append(element("h2", account.label), dates, action, save, status);
@@ -564,7 +581,10 @@
         const accounts = await adapter.listAccounts(context(visit));
         if (!isActive(visit) || !disclosure.open) return;
         const today = localToday();
-        const entries = accounts.map((account) => makeRow(account, today));
+        const entries = await Promise.all(
+          accounts.map((account) => makeRow(account, today)),
+        );
+        if (!isActive(visit) || !disclosure.open) return;
         for (const { row, article } of entries) {
           rows.push(row);
           fields.append(article);

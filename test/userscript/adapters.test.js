@@ -8,7 +8,7 @@ import { runInNewContext } from 'node:vm';
 
 const generated = readFileSync(new URL('../../userscripts/chase-qfx-download.user.js', import.meta.url), 'utf8');
 const module = { exports: {} };
-runInNewContext(generated, { module, URLSearchParams, TextEncoder, crypto: webcrypto });
+runInNewContext(generated, { module, URLSearchParams, TextEncoder, crypto: webcrypto, navigator });
 const { chaseAdapter, createDateMemory, defaultRange } = module.exports;
 
 const accountId = 'synthetic-checking-id';
@@ -50,33 +50,60 @@ test('a Chase row uses the original key and carries forward its last confirmed d
   assert.equal(account.key, suffix);
   const storage = dateStorage([[legacyKey, '2025-01-02']]);
   const memory = createDateMemory(chaseAdapter, () => storage);
-  assert.deepEqual({ ...defaultRange('2025-01-08', memory.read(account.key)) }, {
+  assert.deepEqual({ ...defaultRange('2025-01-08', await memory.read(account.key)) }, {
     from: '2024-12-30', to: '2025-01-08',
   });
   assert.deepEqual([...storage.values], [[legacyKey, '2025-01-02'], [currentKey, '2025-01-02']]);
-  assert.equal(memory.save(account.key, '2024-12-30'), true);
+  assert.equal(await memory.save(account.key, '2024-12-30'), true);
   assert.equal(storage.getItem(currentKey), '2025-01-02');
-  assert.equal(memory.save(account.key, '2025-01-04'), true);
+  assert.equal(await memory.save(account.key, '2025-01-04'), true);
   storage.values.set(legacyKey, '2025-01-03');
-  assert.equal(memory.read(account.key), '2025-01-04');
+  assert.equal(await memory.read(account.key), '2025-01-04');
   storage.values.set(legacyKey, '2025-01-05');
-  assert.equal(memory.read(account.key), '2025-01-05');
+  assert.equal(await memory.read(account.key), '2025-01-05');
   assert.equal(storage.getItem(currentKey), '2025-01-05');
-  assert.equal(createDateMemory({ id: 'other' }, () => storage).read(account.key), null);
+  assert.equal(await createDateMemory({ id: 'other' }, () => storage).read(account.key), null);
 });
 
-test('migration ignores malformed dates and honors legacy coverage when writes fail', () => {
+test('migration and confirmation serialize updates across tabs', async () => {
+  const storage = dateStorage([[legacyKey, '2025-01-02']]);
+  const left = createDateMemory(chaseAdapter, () => storage, navigator.locks);
+  const right = createDateMemory(chaseAdapter, () => storage, navigator.locks);
+  const getItem = storage.getItem;
+  let confirmation;
+  storage.getItem = key => {
+    const value = getItem(key);
+    if (key === currentKey && !confirmation) {
+      storage.getItem = getItem;
+      confirmation = right.save(suffix, '2025-01-04');
+    }
+    return value;
+  };
+
+  assert.equal(await left.read(suffix), '2025-01-02');
+  assert.equal(await confirmation, true);
+  assert.equal(storage.getItem(currentKey), '2025-01-04');
+});
+
+test('migration ignores malformed dates and honors legacy coverage when writes fail', async () => {
   const storage = dateStorage([[legacyKey, '2025-02-30']]);
   const memory = createDateMemory(chaseAdapter, () => storage);
-  assert.equal(memory.read(suffix), null);
+  assert.equal(await memory.read(suffix), null);
   assert.equal(storage.getItem(currentKey), null);
 
   const readOnly = dateStorage([[legacyKey, '2025-01-02']], new Error('storage full'));
   const readOnlyMemory = createDateMemory(chaseAdapter, () => readOnly);
-  assert.equal(readOnlyMemory.read(suffix), '2025-01-02');
-  assert.equal(readOnlyMemory.save(suffix, '2025-01-03'), false);
+  assert.equal(await readOnlyMemory.read(suffix), '2025-01-02');
+  assert.equal(await readOnlyMemory.save(suffix, '2025-01-03'), false);
   assert.equal(readOnly.getItem(currentKey), null);
   assert.equal(readOnly.getItem(legacyKey), '2025-01-02');
+});
+
+test('existing coverage can still be read if Web Locks is unavailable', async () => {
+  const storage = dateStorage([[legacyKey, '2025-01-02']]);
+  const memory = createDateMemory(chaseAdapter, () => storage, null);
+  assert.equal(await memory.read(suffix), '2025-01-02');
+  assert.equal(storage.getItem(currentKey), null);
 });
 
 test('Chase refreshes its token against current accounts before building a download request', async () => {
